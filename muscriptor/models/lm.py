@@ -378,6 +378,16 @@ class LMModel(nn.Module):
         # Accumulated log-prob scores, one per beam row.
         beam_scores = torch.zeros(eff_batch, device=device, dtype=torch.float)
 
+        # Beam search bookkeeping, updated incrementally instead of rescanning
+        # the whole gen_sequence every step. Seeded from the prompt (which may
+        # already contain EOS); afterwards only the newly written column is
+        # inspected.
+        if beam_size > 1:
+            _eos_mask0 = gen_sequence == early_stop_on_token
+            beam_has_ended = _eos_mask0.any(dim=-1)
+            beam_eos_pos = _eos_mask0.int().argmax(dim=-1).clamp(min=1)
+            del _eos_mask0
+
         # For greedy/sampling emit prompt steps now; beam search emits at the end.
         if beam_size == 1:
             for t in range(start_offset):
@@ -448,13 +458,10 @@ class LMModel(nn.Module):
                     # Top beam_size candidate tokens per current beam
                     topk_scores, topk_tokens = torch.topk(log_probs, k=beam_size, dim=-1)
 
-                    # Track which beams have already emitted EOS
-                    eos_mask = gen_sequence == early_stop_on_token
-                    beam_has_ended = eos_mask.any(dim=-1)
-                    eos_pos = eos_mask.int().argmax(dim=-1).clamp(min=1)
+                    # Beams that have already emitted EOS (tracked incrementally)
                     beam_lengths = torch.where(
-                        beam_has_ended, eos_pos,
-                        torch.full_like(eos_pos, offset + 1),
+                        beam_has_ended, beam_eos_pos,
+                        torch.full_like(beam_eos_pos, offset + 1),
                     )
 
                     # Finished beams: don't expand further
@@ -499,8 +506,16 @@ class LMModel(nn.Module):
                     # Update beam scores (store un-normalized for the next step)
                     beam_scores = new_scores.reshape(-1) / lp[prev_global]
 
-                    # Reorder generation sequences to match winning beams
-                    gen_sequence = gen_sequence[prev_global]
+                    # Reorder generation sequences to match winning beams.
+                    # Columns 0..offset+1 hold the only data that can differ
+                    # between beams: everything after is `ungenerated` padding
+                    # identical across rows (prompt tokens are also identical
+                    # across beams), so gather just that prefix in place. The
+                    # advanced-index result is a fresh copy, so the in-place
+                    # write is safe.
+                    gen_sequence[:, : offset + 2] = gen_sequence[prev_global, : offset + 2]
+                    beam_has_ended = beam_has_ended[prev_global]
+                    beam_eos_pos = beam_eos_pos[prev_global]
 
                     # Reorder KV caches — shape is [2, batch, T, heads, head_dim]
                     for state in model_state.values():
@@ -524,8 +539,18 @@ class LMModel(nn.Module):
                     next_token = torch.where(this_step == ungenerated, next_token, this_step)
                     gen_sequence[:, offset + 1] = next_token
 
+                    # Update running EOS state from the newly written column only.
+                    # Only the first EOS position is recorded (matches argmax).
+                    new_eos = next_token == early_stop_on_token
+                    beam_eos_pos = torch.where(
+                        new_eos & ~beam_has_ended,
+                        torch.full_like(beam_eos_pos, offset + 1),
+                        beam_eos_pos,
+                    )
+                    beam_has_ended = beam_has_ended | new_eos
+
                     # Early stop when every beam in every sample has emitted EOS
-                    if (gen_sequence == early_stop_on_token).any(dim=-1).all():
+                    if beam_has_ended.all():
                         break
 
         # Beam search: select best beam per sample and yield all tokens at once
