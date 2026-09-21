@@ -510,7 +510,14 @@ class LMModel(nn.Module):
                                 reorder = torch.cat([prev_global, prev_global + eff_batch])
                             else:
                                 reorder = prev_global
-                            state["cache"] = cache[:, reorder, :, :, :]
+                            # Only the first `offset` slots are filled; the rest
+                            # is untouched NaN padding and is overwritten before
+                            # it is ever read. Gather just the used prefix (the
+                            # advanced-index result is a fresh copy, so writing it
+                            # back in place is safe) instead of copying the whole
+                            # preallocated buffer every step.
+                            used = state["offset"]
+                            cache[:, :, :used] = cache[:, reorder, :used]
 
                     # Write next token (respecting pre-filled prompt positions)
                     this_step = gen_sequence[:, offset + 1]
