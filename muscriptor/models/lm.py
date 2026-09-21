@@ -517,7 +517,7 @@ class LMModel(nn.Module):
                     beam_has_ended = beam_has_ended[prev_global]
                     beam_eos_pos = beam_eos_pos[prev_global]
 
-                    # Reorder KV caches — shape is [2, batch, T, heads, head_dim]
+                    # Reorder KV caches — shape is [2, batch, heads, T, head_dim]
                     for state in model_state.values():
                         if "cache" in state:
                             cache = state["cache"]
@@ -532,7 +532,7 @@ class LMModel(nn.Module):
                             # back in place is safe) instead of copying the whole
                             # preallocated buffer every step.
                             used = state["offset"]
-                            cache[:, :, :used] = cache[:, reorder, :used]
+                            cache[:, :, :, :used] = cache[:, reorder, :, :used]
 
                     # Write next token (respecting pre-filled prompt positions)
                     this_step = gen_sequence[:, offset + 1]

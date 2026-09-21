@@ -47,8 +47,11 @@ class StreamingMultiheadAttention(StatefulModule):
     def init_state(self, batch_size: int, sequence_length: int) -> State:
         weight = self.in_proj_weight
         return {
+            # Layout is [2, batch, heads, time, head_dim] so the per-head
+            # [time, head_dim] slice SDPA reads is contiguous (no per-layer,
+            # per-step transpose of a strided cache view).
             "cache": torch.full(
-                (2, batch_size, sequence_length, self.num_heads, self.dim_per_head),
+                (2, batch_size, self.num_heads, sequence_length, self.dim_per_head),
                 float("nan"),
                 device=weight.device,
                 dtype=weight.dtype,
@@ -63,14 +66,17 @@ class StreamingMultiheadAttention(StatefulModule):
         state["offset"] = state["offset"] + increment
 
     def _complete_kv(self, k, v, state: State | None):
+        """Append k/v ([B, T, H, D]) to the cache; return full k/v as [B, H, T, D]."""
+        k = k.transpose(1, 2)
+        v = v.transpose(1, 2)
         if state is None:
             return k, v
         cache = state["cache"]
         end = state["offset"]
-        T = k.shape[1]
-        cache[0, :, end : end + T] = k
-        cache[1, :, end : end + T] = v
-        return cache[0, :, : end + T], cache[1, :, : end + T]
+        T = k.shape[2]
+        cache[0, :, :, end : end + T] = k
+        cache[1, :, :, end : end + T] = v
+        return cache[0, :, :, : end + T], cache[1, :, :, : end + T]
 
     def forward(
         self,
@@ -86,8 +92,8 @@ class StreamingMultiheadAttention(StatefulModule):
         dtype = q.dtype
 
         q_t = q.transpose(1, 2)
-        k_t = k.transpose(1, 2)
-        v_t = v.transpose(1, 2)
+        k_t = k  # already [B, H, T, D] from _complete_kv
+        v_t = v
 
         # Causality must be bottom-right aligned so streaming decode steps
         # (T_q=1, T_k=cache_len) attend to all past tokens; PyTorch's
