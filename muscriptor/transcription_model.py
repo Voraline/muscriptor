@@ -407,7 +407,7 @@ class TranscriptionModel:
 
         segment_samples = int(_SEGMENT_DURATION * _SAMPLE_RATE)
         num_chunks = math.ceil(total_samples / segment_samples)
-        max_gen_len = 3000
+        max_gen_len = 4000
         print(
             f"[muscriptor] audio: {total_duration:.1f}s → {num_chunks} chunk(s) of {_SEGMENT_DURATION}s",
             file=sys.stderr,
