@@ -377,6 +377,13 @@ class LMModel(nn.Module):
 
         # Accumulated log-prob scores, one per beam row.
         beam_scores = torch.zeros(eff_batch, device=device, dtype=torch.float)
+        cache_states = [s for s in model_state.values() if "cache" in s]
+        sample_base = (
+            torch.arange(num_samples, device=device).repeat_interleave(beam_size)
+            * beam_size
+            if beam_size > 1
+            else None
+        )
 
         # Beam search bookkeeping, updated incrementally instead of rescanning
         # the whole gen_sequence every step. Seeded from the prompt (which may
@@ -472,17 +479,10 @@ class LMModel(nn.Module):
                     topk_scores, topk_tokens = torch.topk(log_probs, k=beam_size, dim=-1)
 
                     # Beams that have already emitted EOS (tracked incrementally)
-                    beam_lengths = torch.where(
-                        beam_has_ended, beam_eos_pos,
-                        torch.full_like(beam_eos_pos, offset + 1),
-                    )
+                    beam_lengths = torch.where(beam_has_ended, beam_eos_pos, offset + 1)
 
                     # Finished beams: don't expand further
-                    topk_scores = torch.where(
-                        beam_has_ended.unsqueeze(-1),
-                        torch.zeros_like(topk_scores),
-                        topk_scores,
-                    )
+                    topk_scores = topk_scores.masked_fill(beam_has_ended.unsqueeze(-1), 0.0)
 
                     # Length-normalized candidate scores: [eff_batch, beam_size]
                     lp = 1.0 / (beam_lengths.float() ** beam_length_score_alpha)
@@ -506,11 +506,7 @@ class LMModel(nn.Module):
                     prev_local = (best_idx // beam_size).reshape(-1)
                     tok_rank = (best_idx % beam_size).reshape(-1)
 
-                    # Map to global row indices in [eff_batch, …] tensors
-                    sample_base = (
-                        torch.arange(num_samples, device=device)
-                        .repeat_interleave(beam_size) * beam_size
-                    )
+                    # Map to global row indices in [eff_batch, …] tensors using precomputed base
                     prev_global = sample_base + prev_local
 
                     # Token for each new beam
@@ -520,32 +516,20 @@ class LMModel(nn.Module):
                     beam_scores = new_scores.reshape(-1) / lp[prev_global]
 
                     # Reorder generation sequences to match winning beams.
-                    # Columns 0..offset+1 hold the only data that can differ
-                    # between beams: everything after is `ungenerated` padding
-                    # identical across rows (prompt tokens are also identical
-                    # across beams), so gather just that prefix in place. The
-                    # advanced-index result is a fresh copy, so the in-place
-                    # write is safe.
                     gen_sequence[:, : offset + 2] = gen_sequence[prev_global, : offset + 2]
                     beam_has_ended = beam_has_ended[prev_global]
                     beam_eos_pos = beam_eos_pos[prev_global]
 
                     # Reorder KV caches — shape is [2, batch, heads, T, head_dim]
-                    for state in model_state.values():
-                        if "cache" in state:
-                            cache = state["cache"]
-                            if cache.shape[1] == 2 * eff_batch:  # CFG-doubled cache
-                                reorder = torch.cat([prev_global, prev_global + eff_batch])
-                            else:
-                                reorder = prev_global
-                            # Only the first `offset` slots are filled; the rest
-                            # is untouched NaN padding and is overwritten before
-                            # it is ever read. Gather just the used prefix (the
-                            # advanced-index result is a fresh copy, so writing it
-                            # back in place is safe) instead of copying the whole
-                            # preallocated buffer every step.
-                            used = state["offset"]
-                            cache[:, :, :, :used] = cache[:, reorder, :, :used]
+                    reorder = (
+                        torch.cat([prev_global, prev_global + eff_batch])
+                        if (cfg_coef != 1.0)
+                        else prev_global
+                    )
+                    for state in cache_states:
+                        cache = state["cache"]
+                        used = state["offset"]
+                        cache[:, :, :, :used] = cache[:, reorder, :, :used]
 
                     # Write next token (respecting pre-filled prompt positions)
                     this_step = gen_sequence[:, offset + 1]
@@ -557,13 +541,13 @@ class LMModel(nn.Module):
                     new_eos = next_token == early_stop_on_token
                     beam_eos_pos = torch.where(
                         new_eos & ~beam_has_ended,
-                        torch.full_like(beam_eos_pos, offset + 1),
+                        offset + 1,
                         beam_eos_pos,
                     )
                     beam_has_ended = beam_has_ended | new_eos
 
                     # Early stop when every beam in every sample has emitted EOS
-                    if beam_has_ended.all():
+                    if new_eos.any() and beam_has_ended.all():
                         break
 
         # Beam search: select best beam per sample and yield all tokens at once

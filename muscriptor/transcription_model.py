@@ -183,7 +183,11 @@ def _remap_single_codebook_keys(state_dict: dict) -> dict:
     return remapped
 
 
-def _build_model(device: torch.device, cfg: _ModelConfig = _DEFAULT_CONFIG) -> LMModel:
+def _build_model(
+    device: torch.device,
+    cfg: _ModelConfig = _DEFAULT_CONFIG,
+    dtype: torch.dtype = torch.float16,
+) -> LMModel:
     mel_cond = MelSpectrogramConditioner(
         output_dim=cfg.dim,
         device=device,
@@ -211,7 +215,8 @@ def _build_model(device: torch.device, cfg: _ModelConfig = _DEFAULT_CONFIG) -> L
     # (see load_model) — autocast there is measurably slower than fp32.
     autocast = TorchAutocast(enabled=False)
     if device.type == "cuda":
-        autocast = TorchAutocast(enabled=True, device_type="cuda", dtype=torch.float16)
+        autocast_dtype = dtype if dtype in (torch.float16, torch.bfloat16) else torch.float16
+        autocast = TorchAutocast(enabled=True, device_type="cuda", dtype=autocast_dtype)
 
     model = LMModel(
         condition_provider=condition_provider,
@@ -309,9 +314,17 @@ class TranscriptionModel:
         elif isinstance(dtype, str):
             dtype = getattr(torch, dtype)
 
+        # On GPUs lacking native bfloat16 hardware support (e.g. NVIDIA Turing / T4 / RTX 20xx),
+        # fallback to float16 to run on native FP16 Tensor Cores instead of slow software emulation.
+        if device.type == "cuda" and dtype == torch.bfloat16:
+            if hasattr(torch.cuda, "is_bf16_supported") and not torch.cuda.is_bf16_supported():
+                dtype = torch.float16
+
         source = _resolve_source(weights_path)
         weights_path = download_if_necessary(source)
-        model = _build_model(device, _resolve_config(source, weights_path))
+        model = _build_model(
+            device, _resolve_config(source, weights_path), dtype=dtype
+        )
         model.eval()
 
         state_dict = load_file(weights_path, device=str(device))
@@ -328,10 +341,14 @@ class TranscriptionModel:
             instrument_vocabulary="MT3_FULL_PLUS",
             max_shift_steps=1001,
         )
+        if device.type == "cuda":
+            torch.backends.cuda.matmul.allow_tf32 = True
+            torch.backends.cudnn.allow_tf32 = True
 
         return cls(model=model, tokenizer=tokenizer, device=device)
 
     # ------------------------------------------------------------------
+    @torch.inference_mode()
     def transcribe(
         self,
         audio: str | Path | tuple[torch.Tensor, int],
