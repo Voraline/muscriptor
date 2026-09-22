@@ -720,8 +720,9 @@ class TranscriptionModel:
         if mode is False:
             return None
         tensor, sample_rate = audio if isinstance(audio, tuple) else (audio, None)
+        load_fn = getattr(self, "_load_wav_cpu", self._load_wav)
         try:
-            return detect_grid(self._load_wav_cpu(tensor, sample_rate), _SAMPLE_RATE)
+            return detect_grid(load_fn(tensor, sample_rate), _SAMPLE_RATE)
         except BeatDetectionError as e:
             if mode is True:
                 raise

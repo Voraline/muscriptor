@@ -204,12 +204,12 @@ class StreamingTransformer(StatefulModule):
         # Precompute static sinusoidal position embeddings up to max_period to eliminate
         # dynamic trigonometry kernel launches and tensor allocations during token decoding.
         pos_table = create_sin_embedding(
-            torch.arange(int(max_period), dtype=torch.float32, device=device).unsqueeze(-1),
+            torch.arange(int(max_period), dtype=torch.float32, device=device).view(-1, 1),
             d_model,
             max_period=max_period,
             dtype=torch.float32,
-            inv_freq=inv_freq.view(1, 1, -1),
-        ).squeeze(1)
+            inv_freq=inv_freq.view(1, -1),
+        ).view(int(max_period), d_model)
         self.register_buffer("pos_table", pos_table, persistent=False)
 
         self.layers = nn.ModuleList(
