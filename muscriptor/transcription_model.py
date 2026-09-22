@@ -361,6 +361,7 @@ class TranscriptionModel:
         beam_size: int = 1,
         prelude_forcing: bool = True,
         max_gen_len: int = 5000,
+        normalize: bool = False,
     ) -> Iterator[NoteStartEvent | NoteEndEvent | ProgressEvent]:
         """Transcribe audio into a stream of note events.
 
@@ -373,6 +374,10 @@ class TranscriptionModel:
         token outside the listed groups is masked out during generation, so
         no other instrument can appear in the output. Leave it unset to let
         the model decode whatever instruments it detects.
+
+        ``normalize`` (default False), when True, peak-normalizes the input audio
+        waveform to 0.95 amplitude before processing, boosting quiet instruments
+        and faint note onsets for higher transcription sensitivity.
 
         ``prelude_forcing`` (default True) teacher-forces each chunk's tie
         prologue — the tokens declaring which notes are sustained from the
@@ -423,6 +428,11 @@ class TranscriptionModel:
         else:
             with _timed("load audio", timings):
                 wav = self._load_wav(audio, None)
+
+        if normalize:
+            max_val = torch.max(torch.abs(wav))
+            if max_val > 1e-6:
+                wav = wav * (0.95 / max_val)
 
         total_samples = wav.shape[-1]
         total_duration = total_samples / _SAMPLE_RATE
@@ -652,6 +662,7 @@ class TranscriptionModel:
         prelude_forcing: bool = True,
         detect_tempo: TempoDetection = "best-effort",
         quantize: bool = False,
+        normalize: bool = False,
     ) -> tuple[bytes, BeatGrid | None]:
         """Same as :meth:`transcribe`, but as a MIDI file plus the grid it used.
 
@@ -676,6 +687,7 @@ class TranscriptionModel:
                 no_eos_is_ok=no_eos_is_ok,
                 beam_size=beam_size,
                 prelude_forcing=prelude_forcing,
+                normalize=normalize,
             )
         )
         if beat_grid is not None:

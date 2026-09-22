@@ -239,6 +239,13 @@ def transcribe(
             ),
         ),
     ] = "best-effort",
+    normalize: Annotated[
+        bool,
+        typer.Option(
+            "--normalize/--no-normalize",
+            help="Peak-normalize audio waveform to 0.95 amplitude before transcribing (boosts quiet notes and instruments)",
+        ),
+    ] = False,
 ) -> None:
     """Transcribe an audio file to MIDI."""
     instrument_names: list[str] | None = None
@@ -321,6 +328,7 @@ def transcribe(
         no_eos_is_ok=not strict_eos,
         beam_size=beam_size,
         prelude_forcing=prelude_forcing,
+        normalize=normalize,
     )
 
     if format == OutputFormat.sheets:
