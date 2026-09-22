@@ -47,7 +47,7 @@ class ScaledEmbedding(nn.Embedding):
         is_zero = input == self.zero_idx
         input = input.clamp(min=0)
         y = super().forward(input, *args, **kwargs)
-        return torch.where(is_zero[..., None], torch.zeros_like(y), y)
+        return y.masked_fill(is_zero.unsqueeze(-1), 0.0)
 
 
 # ---------------------------------------------------------------------------
@@ -443,10 +443,6 @@ class LMModel(nn.Module):
                         increment=input_T + (prepend_length if first_iter else 0),
                     )
 
-                    this_gen_step = gen_sequence[:, offset + 1]
-                    next_token = torch.where(
-                        this_gen_step == ungenerated, next_token, this_gen_step
-                    )
                     gen_sequence[:, offset + 1] = next_token
 
                     if early_stop_on_token is not None:
@@ -473,7 +469,7 @@ class LMModel(nn.Module):
                         increment=input_T + (prepend_length if first_iter else 0),
                     )
 
-                    log_probs = torch.log_softmax(logits.float(), dim=-1)
+                    log_probs = torch.log_softmax(logits, dim=-1)
 
                     # Top beam_size candidate tokens per current beam
                     topk_scores, topk_tokens = torch.topk(log_probs, k=beam_size, dim=-1)
@@ -531,9 +527,7 @@ class LMModel(nn.Module):
                         used = state["offset"]
                         cache[:, :, :, :used] = cache[:, reorder, :, :used]
 
-                    # Write next token (respecting pre-filled prompt positions)
-                    this_step = gen_sequence[:, offset + 1]
-                    next_token = torch.where(this_step == ungenerated, next_token, this_step)
+                    # Write next token
                     gen_sequence[:, offset + 1] = next_token
 
                     # Update running EOS state from the newly written column only.
