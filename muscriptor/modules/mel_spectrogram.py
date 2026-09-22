@@ -101,6 +101,11 @@ class _MelSpectrogram(nn.Module):
             normalized=False,
             onesided=True,
         )
-        spec = spec.abs() ** self.power
+        if self.power == 1.0:
+            spec = spec.abs()
+        elif self.power == 2.0:
+            spec = spec.real.pow(2) + spec.imag.pow(2)
+        else:
+            spec = spec.abs() ** self.power
         mel = torch.matmul(spec.transpose(-1, -2), self.mel_scale.fb).transpose(-1, -2)
         return mel.reshape(*leading, *mel.shape[-2:])

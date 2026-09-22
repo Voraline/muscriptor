@@ -92,13 +92,13 @@ def nullify_all_conditions(
 
     Used to build the unconditional batch for classifier-free guidance.
     """
-    samples = deepcopy(samples)
-    for sample in samples:
-        for k in list(sample.wav):
-            sample.wav[k] = nullify_wav(sample.wav[k])
-        for k in list(sample.text):
-            sample.text[k] = None
-    return samples
+    return [
+        ConditioningAttributes(
+            text={k: None for k in sample.text},
+            wav={k: nullify_wav(sample.wav[k]) for k in sample.wav},
+        )
+        for sample in samples
+    ]
 
 
 class MelSpectrogramConditioner(nn.Module):
@@ -161,25 +161,18 @@ class MelSpectrogramConditioner(nn.Module):
     def _mel_embedding(self, x: WavCondition) -> torch.Tensor:
         if x.wav.shape[-1] == 1:
             return torch.zeros(x.wav.shape[0], 1, self.dim, device=self.device)
-        muscriptor.accelerator.synchronize()
-        t0 = time.perf_counter()
         with torch.no_grad():
             wav = x.wav
             if self.normalize_audio:
                 wav = wav / (wav.abs().max(dim=-1, keepdim=True).values + 1e-8)
             mel = self.mel_spec_transform(wav)
-            mel = rearrange(mel, "b 1 d t -> b t d")
+            mel = mel.squeeze(1).transpose(1, 2)
             if self.fine_frame_rate_ratio > 1:
                 mel = rearrange(
                     mel[:, :-1], "b (t f) d -> b t (f d)", f=self.fine_frame_rate_ratio
                 )
             if self.log_scale:
                 mel = torch.log(mel + self.eps)
-        muscriptor.accelerator.synchronize()
-        print(
-            f"[muscriptor] mel-spec ({wav.shape[0]} × {wav.shape[-1]} samples): "
-            f"{time.perf_counter() - t0:.3f}s"
-        )
         return mel
 
     def forward(self, x: WavCondition) -> ConditionType:
@@ -252,15 +245,19 @@ def collate_wavs(
             seek_times[attribute].extend(seek_time)
 
     for attribute in wav_conditions:
-        # Stack along batch dim
         all_wavs = wavs[attribute]
-        max_len = max(w.shape[-1] for w in all_wavs)
-        padded = torch.cat(
-            [F.pad(w, (0, max_len - w.shape[-1])) for w in all_wavs], dim=0
-        )
+        if len(all_wavs) == 1:
+            padded = all_wavs[0]
+            cat_lengths = lengths[attribute][0]
+        else:
+            max_len = max(w.shape[-1] for w in all_wavs)
+            padded = torch.cat(
+                [F.pad(w, (0, max_len - w.shape[-1])) for w in all_wavs], dim=0
+            )
+            cat_lengths = torch.cat(lengths[attribute])
         out[attribute] = WavCondition(
             padded,
-            torch.cat(lengths[attribute]),
+            cat_lengths,
             sample_rates[attribute],
             paths[attribute],
             seek_times[attribute],

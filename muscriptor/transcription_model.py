@@ -344,6 +344,7 @@ class TranscriptionModel:
         if device.type == "cuda":
             torch.backends.cuda.matmul.allow_tf32 = True
             torch.backends.cudnn.allow_tf32 = True
+            torch.backends.cudnn.benchmark = True
 
         return cls(model=model, tokenizer=tokenizer, device=device)
 

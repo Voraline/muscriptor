@@ -4,7 +4,7 @@ Adapted from YourMT3+ (https://github.com/mimbres/YourMT3).
 """
 
 import os
-from collections import Counter
+from collections import Counter, defaultdict
 from dataclasses import dataclass
 
 from mido import Message, MetaMessage, MidiFile, MidiTrack, second2tick
@@ -74,31 +74,34 @@ def validate_notes(
     minimum_offset: float | None = MINIMUM_NOTE_DURATION_SEC,
     fix: bool = True,
 ) -> list[Note]:
-    if len(notes) > 0:
-        for note in list(notes):
-            if note.onset is None and fix:
-                notes.remove(note)
-            elif note.offset is None and fix:
-                note.offset = note.onset + minimum_offset
-            elif note.onset > note.offset:
-                if fix:
-                    note.offset = max(note.offset, note.onset + minimum_offset)
-            elif note.is_drum is False and note.offset - note.onset < 0.01 and fix:
-                note.offset = note.onset + minimum_offset
-    return notes
+    if not notes:
+        return notes
+    valid = []
+    for note in notes:
+        if note.onset is None:
+            if not fix:
+                valid.append(note)
+            continue
+        if note.offset is None and fix:
+            note.offset = note.onset + minimum_offset
+        elif note.onset > note.offset:
+            if fix:
+                note.offset = max(note.offset, note.onset + minimum_offset)
+        elif note.is_drum is False and note.offset - note.onset < 0.01 and fix:
+            note.offset = note.onset + minimum_offset
+        valid.append(note)
+    return valid
 
 
 def trim_overlapping_notes(notes: list[Note], sort: bool = True) -> list[Note]:
     if len(notes) <= 1:
         return notes
     trimmed_notes = []
-    channels = set((note.program, note.pitch, note.is_drum) for note in notes)
-    for program, pitch, is_drum in channels:
-        channel_notes = [
-            n
-            for n in notes
-            if n.pitch == pitch and n.program == program and n.is_drum == is_drum
-        ]
+    by_channel = defaultdict(list)
+    for note in notes:
+        by_channel[(note.program, note.pitch, note.is_drum)].append(note)
+
+    for channel_notes in by_channel.values():
         sorted_notes = sorted(channel_notes, key=lambda n: n.onset)
         for i in range(1, len(sorted_notes)):
             if sorted_notes[i - 1].offset > sorted_notes[i].onset:

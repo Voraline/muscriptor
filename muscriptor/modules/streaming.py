@@ -56,24 +56,29 @@ def increment_steps(
 ) -> None:
     """Bump the step counter for every stateful submodule of ``model``.
 
-    Uses each module's ``_module_absolute_name`` (set by :func:`init_states`)
-    to look up its slot. Caches the list of stateful modules to avoid
-    re-traversing the full named_modules() tree at every token decode step.
+    Pre-binds module.increment_step and its state dictionary on model_state
+    to eliminate dictionary lookups on every token decode step.
     """
-    cached = getattr(model, "_cached_stateful_modules", None)
-    if cached is None:
-        cached = [
-            (module, module._module_absolute_name)
-            for _, module in model.named_modules()
-            if (
-                isinstance(module, StatefulModule)
-                and module._module_absolute_name is not None
-            )
+    pairs = model_state.get("_cached_pairs")
+    if pairs is None:
+        cached = getattr(model, "_cached_stateful_modules", None)
+        if cached is None:
+            cached = [
+                (module, module._module_absolute_name)
+                for _, module in model.named_modules()
+                if (
+                    isinstance(module, StatefulModule)
+                    and module._module_absolute_name is not None
+                )
+            ]
+            if cached:
+                model._cached_stateful_modules = cached
+        pairs = [
+            (module.increment_step, model_state[abs_name])
+            for module, abs_name in cached
+            if abs_name in model_state
         ]
-        if cached:
-            model._cached_stateful_modules = cached
+        model_state["_cached_pairs"] = pairs
 
-    for module, abs_name in cached:
-        state = model_state.get(abs_name)
-        if state is not None:
-            module.increment_step(state, increment)
+    for step_fn, state in pairs:
+        step_fn(state, increment)

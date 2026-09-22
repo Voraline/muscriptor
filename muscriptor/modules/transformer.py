@@ -55,9 +55,8 @@ class StreamingMultiheadAttention(StatefulModule):
             # Layout is [2, batch, heads, time, head_dim] so the per-head
             # [time, head_dim] slice SDPA reads is contiguous (no per-layer,
             # per-step transpose of a strided cache view).
-            "cache": torch.full(
+            "cache": torch.empty(
                 (2, batch_size, self.num_heads, initial_capacity, self.dim_per_head),
-                float("nan"),
                 device=weight.device,
                 dtype=weight.dtype,
             ),
@@ -86,9 +85,8 @@ class StreamingMultiheadAttention(StatefulModule):
             max_len = state.get("max_length", end + T)
             target = max(cache.shape[3] * 2, end + T)
             new_capacity = max(end + T, min(max_len, target))
-            new_cache = torch.full(
+            new_cache = torch.empty(
                 (2, cache.shape[1], self.num_heads, new_capacity, self.dim_per_head),
-                float("nan"),
                 device=cache.device,
                 dtype=cache.dtype,
             )
@@ -130,18 +128,20 @@ class StreamingMultiheadAttention(StatefulModule):
         if T_q == 1:
             # One query row, bottom-right aligned: nothing is masked.
             x = F.scaled_dot_product_attention(q_t, k_t, v_t, dropout_p=0.0)
+            # x has shape [B, H, 1, D]. Squeezing dim 2 yields [B, H, D] with strides (H*D, D, 1)
+            # which is already contiguous, enabling a zero-copy pointer view without memory allocation.
+            x = x.squeeze(2).view(B, 1, self.embed_dim)
         elif T_q == T_k:
             # Square: bottom-right and top-left alignment coincide.
             x = F.scaled_dot_product_attention(
                 q_t, k_t, v_t, is_causal=True, dropout_p=0.0
             )
+            x = x.transpose(1, 2).to(dtype).reshape(B, T, self.embed_dim)
         else:
             # Unused in practice
             raise NotImplementedError(
                 f"Streaming attention with T_q={T_q} and T_k={T_k} is not supported; use T_q=1 or T_q=T_k."
             )
-        x = x.transpose(1, 2).to(dtype)
-        x = x.reshape(B, T, self.embed_dim)
         x = self.out_proj(x)
         return x
 
@@ -172,8 +172,8 @@ class StreamingTransformerLayer(nn.Module):
         x: torch.Tensor,
         model_state: ModelState | None = None,
     ):
-        x = x + self.self_attn(self.norm1(x), model_state=model_state)
-        x = x + self.linear2(F.gelu(self.linear1(self.norm2(x))))
+        x = x.add_(self.self_attn(self.norm1(x), model_state=model_state))
+        x = x.add_(self.linear2(F.gelu(self.linear1(self.norm2(x)))))
         return x
 
 

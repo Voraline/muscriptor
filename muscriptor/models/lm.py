@@ -178,12 +178,12 @@ class LMModel(nn.Module):
             prepend_length=prepend_length,
             model_state=model_state,
         )
-        if self.out_norm:
-            transformer_out = self.out_norm(transformer_out)
-
-        # Remove prepended conditioning tokens
+        # Remove prepended conditioning tokens before out_norm to avoid normalizing discarded tokens
         if prepend_length > 0:
             transformer_out = transformer_out[:, -S:]
+
+        if self.out_norm:
+            transformer_out = self.out_norm(transformer_out)
 
         logits = self.linear(transformer_out)
         return logits  # [B, S, card]
@@ -308,32 +308,12 @@ class LMModel(nn.Module):
         if conditions:
             if cfg_coef == 1.0:
                 prepared = self.condition_provider.tokenize(conditions)
-                muscriptor.accelerator.synchronize()
-                _t = time.perf_counter()
                 cfg_conditions: ConditionTensors = self.condition_provider(prepared)
-                muscriptor.accelerator.synchronize()
-                print(
-                    f"[muscriptor] encode conditions (total): {time.perf_counter() - _t:.3f}s"
-                )
             else:
                 null_conditions = nullify_all_conditions(conditions)
                 all_conditions = conditions + null_conditions
                 prepared = self.condition_provider.tokenize(all_conditions)
-                print(
-                    "[muscriptor] instrument_group tokens:",
-                    prepared.get("instrument_group"),
-                )
-                print(
-                    "[muscriptor] dataset_name tokens:    ",
-                    prepared.get("dataset_name"),
-                )
-                muscriptor.accelerator.synchronize()
-                _t = time.perf_counter()
                 cfg_conditions = self.condition_provider(prepared)
-                muscriptor.accelerator.synchronize()
-                print(
-                    f"[muscriptor] encode conditions (total): {time.perf_counter() - _t:.3f}s"
-                )
         else:
             cfg_conditions = {}
 
@@ -365,8 +345,7 @@ class LMModel(nn.Module):
             if beam_size > 1:
                 prompt = torch.repeat_interleave(prompt, beam_size, dim=0)
             gen_sequence[:, 1 : 1 + PT] = prompt
-            ungenerated_steps = (gen_sequence == ungenerated).nonzero()[:, 1]
-            start_offset = max(0, int(ungenerated_steps.amin()) - 1)
+            start_offset = PT
 
         prepend_length = sum(cond.shape[1] for cond, _ in cfg_conditions.values())
         cache_batch_size = eff_batch * (1 if cfg_coef == 1.0 else 2)
@@ -481,7 +460,7 @@ class LMModel(nn.Module):
                     topk_scores = topk_scores.masked_fill(beam_has_ended.unsqueeze(-1), 0.0)
 
                     # Length-normalized candidate scores: [eff_batch, beam_size]
-                    lp = 1.0 / (beam_lengths.float() ** beam_length_score_alpha)
+                    lp = torch.pow(beam_lengths.float(), -beam_length_score_alpha)
                     cand = (beam_scores.unsqueeze(-1) + topk_scores) * lp.unsqueeze(-1)
 
                     # Reshape to [num_samples, beam_size²] for cross-beam selection
@@ -540,8 +519,9 @@ class LMModel(nn.Module):
                     )
                     beam_has_ended = beam_has_ended | new_eos
 
-                    # Early stop when every beam in every sample has emitted EOS
-                    if new_eos.any() and beam_has_ended.all():
+                    # Early stop when every beam in every sample has emitted EOS.
+                    # Checked periodically to allow asynchronous CUDA kernel queuing and eliminate ping-pong stalls.
+                    if (offset % 4 == 0 or offset == max_gen_len - 1) and beam_has_ended.all():
                         break
 
         # Beam search: select best beam per sample and yield all tokens at once
@@ -551,5 +531,11 @@ class LMModel(nn.Module):
                 torch.arange(num_samples, device=device) * beam_size + best_beam
             )
             best_sequence = gen_sequence[best_global]  # [num_samples, T]
-            for t in range(last_offset + 1):
+            ended = beam_has_ended[best_global]
+            if ended.all():
+                cutoff = int(beam_eos_pos[best_global].max().item())
+                end_t = min(last_offset + 1, cutoff)
+            else:
+                end_t = last_offset + 1
+            for t in range(end_t):
                 yield best_sequence[:, t + 1]
