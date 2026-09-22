@@ -389,7 +389,14 @@ class LMModel(nn.Module):
             del _eos_mask0
 
         # For greedy/sampling emit prompt steps now; beam search emits at the end.
+        has_ended = None
+        all_done = False
         if beam_size == 1:
+            if early_stop_on_token is not None:
+                has_ended = (
+                    gen_sequence[:, : start_offset + 1] == early_stop_on_token
+                ).any(dim=-1)
+                all_done = bool(has_ended.all().item())
             for t in range(start_offset):
                 yield gen_sequence[:, t + 1]
 
@@ -406,10 +413,8 @@ class LMModel(nn.Module):
 
                 if beam_size == 1:
                     # ── Standard greedy / sampling path ──────────────────
-                    if early_stop_on_token is not None:
-                        done = (gen_sequence == early_stop_on_token).any(dim=1).all()
-                        if done:
-                            break
+                    if all_done:
+                        break
 
                     next_token = self._sample_next_token(
                         input_,
@@ -436,6 +441,14 @@ class LMModel(nn.Module):
                         this_gen_step == ungenerated, next_token, this_gen_step
                     )
                     gen_sequence[:, offset + 1] = next_token
+
+                    if early_stop_on_token is not None:
+                        new_eos = next_token == early_stop_on_token
+                        if eff_batch == 1:
+                            all_done = bool(new_eos.item())
+                        else:
+                            has_ended = has_ended | new_eos
+                            all_done = bool(has_ended.all().item())
 
                     yield gen_sequence[:, offset + 1]  # [num_samples]
 

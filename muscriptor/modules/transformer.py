@@ -1,6 +1,3 @@
-"""Causal streaming transformer for muscriptor inference."""
-
-from einops import rearrange
 import torch
 import torch.nn as nn
 from torch.nn import functional as F
@@ -13,13 +10,17 @@ def create_sin_embedding(
     dim: int,
     max_period: float = 10000,
     dtype: torch.dtype = torch.float32,
+    inv_freq: torch.Tensor | None = None,
 ) -> torch.Tensor:
     assert dim % 2 == 0
     half_dim = dim // 2
     positions = positions.to(dtype)
-    adim = torch.arange(half_dim, device=positions.device, dtype=dtype).view(1, 1, -1)
-    max_period_tensor = torch.full([], max_period, device=positions.device, dtype=dtype)
-    phase = positions / (max_period_tensor ** (adim / (half_dim - 1)))
+    if inv_freq is None:
+        adim = torch.arange(half_dim, device=positions.device, dtype=dtype).view(1, 1, -1)
+        max_period_tensor = torch.full([], max_period, device=positions.device, dtype=dtype)
+        phase = positions / (max_period_tensor ** (adim / (half_dim - 1)))
+    else:
+        phase = positions * inv_freq.to(device=positions.device, dtype=dtype)
     return torch.cat([torch.cos(phase), torch.sin(phase)], dim=-1)
 
 
@@ -83,9 +84,10 @@ class StreamingMultiheadAttention(StatefulModule):
         query: torch.Tensor,
         model_state: ModelState | None = None,
     ):
+        B, T, _ = query.shape
         state = self.get_state(model_state)
         projected = nn.functional.linear(query, self.in_proj_weight)
-        packed = rearrange(projected, "b t (p h d) -> b t p h d", p=3, h=self.num_heads)
+        packed = projected.view(B, T, 3, self.num_heads, self.dim_per_head)
         q, k, v = packed.unbind(dim=2)
 
         k, v = self._complete_kv(k, v, state)
@@ -118,8 +120,7 @@ class StreamingMultiheadAttention(StatefulModule):
                 f"Streaming attention with T_q={T_q} and T_k={T_k} is not supported; use T_q=1 or T_q=T_k."
             )
         x = x.transpose(1, 2).to(dtype)
-
-        x = rearrange(x, "b t h d -> b t (h d)")
+        x = x.reshape(B, T, self.embed_dim)
         x = self.out_proj(x)
         return x
 
@@ -171,6 +172,11 @@ class StreamingTransformer(StatefulModule):
         super().__init__()
         assert d_model % num_heads == 0
         self.max_period = max_period
+        half_dim = d_model // 2
+        adim = torch.arange(half_dim, dtype=torch.float32)
+        inv_freq = 1.0 / (max_period ** (adim / (half_dim - 1)))
+        self.register_buffer("inv_freq", inv_freq.view(1, 1, -1), persistent=False)
+
         self.layers = nn.ModuleList(
             [
                 StreamingTransformerLayer(
@@ -214,7 +220,7 @@ class StreamingTransformer(StatefulModule):
         # represent odd integers above 2048, so half-precision positions would
         # collapse neighbouring timesteps to the same embedding.
         pos_emb = create_sin_embedding(
-            positions, C, max_period=self.max_period, dtype=torch.float32
+            positions, C, max_period=self.max_period, dtype=torch.float32, inv_freq=self.inv_freq
         )
         x = x + (pos_emb * (positions >= 0).float()).to(x.dtype)
 

@@ -305,7 +305,7 @@ class TranscriptionModel:
             device = torch.device(device)
 
         if dtype is None:
-            dtype = torch.float16 if device.type == "mps" else torch.float32
+            dtype = torch.float16 if device.type in ("mps", "cuda") else torch.float32
         elif isinstance(dtype, str):
             dtype = getattr(torch, dtype)
 

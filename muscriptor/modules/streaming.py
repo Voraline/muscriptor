@@ -57,12 +57,23 @@ def increment_steps(
     """Bump the step counter for every stateful submodule of ``model``.
 
     Uses each module's ``_module_absolute_name`` (set by :func:`init_states`)
-    to look up its slot, so this works on subtrees even when ``init_states``
-    was called on a different root.
+    to look up its slot. Caches the list of stateful modules to avoid
+    re-traversing the full named_modules() tree at every token decode step.
     """
-    for _, module in model.named_modules():
-        if (
-            isinstance(module, StatefulModule)
-            and module._module_absolute_name is not None
-        ):
-            module.increment_step(model_state[module._module_absolute_name], increment)
+    cached = getattr(model, "_cached_stateful_modules", None)
+    if cached is None:
+        cached = [
+            (module, module._module_absolute_name)
+            for _, module in model.named_modules()
+            if (
+                isinstance(module, StatefulModule)
+                and module._module_absolute_name is not None
+            )
+        ]
+        if cached:
+            model._cached_stateful_modules = cached
+
+    for module, abs_name in cached:
+        state = model_state.get(abs_name)
+        if state is not None:
+            module.increment_step(state, increment)
