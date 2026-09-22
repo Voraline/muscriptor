@@ -188,7 +188,7 @@ class MelSpectrogramConditioner(nn.Module):
         else:
             mask = torch.ones_like(embeds[..., 0])
         mask_f = mask.float().unsqueeze(-1).to(embeds.device)
-        embeds = embeds * mask_f
+        embeds = embeds.mul_(mask_f)
         return embeds, mask
 
 

@@ -21,7 +21,10 @@ def create_sin_embedding(
         phase = positions / (max_period_tensor ** (adim / (half_dim - 1)))
     else:
         phase = positions * inv_freq.to(device=positions.device, dtype=dtype)
-    return torch.cat([torch.cos(phase), torch.sin(phase)], dim=-1)
+    out = torch.empty((*phase.shape[:-1], dim), device=phase.device, dtype=dtype)
+    torch.cos(phase, out=out[..., :half_dim])
+    torch.sin(phase, out=out[..., half_dim:])
+    return out
 
 
 class StreamingMultiheadAttention(StatefulModule):
@@ -90,7 +93,7 @@ class StreamingMultiheadAttention(StatefulModule):
                 device=cache.device,
                 dtype=cache.dtype,
             )
-            new_cache[:, :, :, :end] = cache[:, :, :, :end]
+            new_cache[:, :, :, :end].copy_(cache[:, :, :, :end])
             state["cache"] = new_cache
             cache = new_cache
 
@@ -240,7 +243,7 @@ class StreamingTransformer(StatefulModule):
             pos_emb = create_sin_embedding(
                 positions, C, max_period=self.max_period, dtype=torch.float32, inv_freq=self.inv_freq
             )
-            x = x + pos_emb.to(x.dtype)
+            x = x.add_(pos_emb.to(x.dtype))
         else:
             positions = torch.arange(T, device=x.device).view(1, -1, 1) + offsets.view(-1, 1, 1)
             # Always compute the sinusoidal embedding in fp32: fp16 cannot even

@@ -159,6 +159,7 @@ class LMModel(nn.Module):
         condition_tensors: ConditionTensors,
         first_step: bool = False,
         model_state: ModelState | None = None,
+        last_step_only: bool = False,
     ) -> torch.Tensor:  # [B, S, card]
         B, S = sequence.shape
 
@@ -181,6 +182,9 @@ class LMModel(nn.Module):
         # Remove prepended conditioning tokens before out_norm to avoid normalizing discarded tokens
         if prepend_length > 0:
             transformer_out = transformer_out[:, -S:]
+
+        if last_step_only:
+            transformer_out = transformer_out[:, -1:]
 
         if self.out_norm:
             transformer_out = self.out_norm(transformer_out)
@@ -211,6 +215,7 @@ class LMModel(nn.Module):
                 cfg_conditions,
                 first_step=first_step,
                 model_state=model_state,
+                last_step_only=True,
             )
         else:
             doubled = torch.cat([sequence, sequence], dim=0)
@@ -219,12 +224,17 @@ class LMModel(nn.Module):
                 cfg_conditions,
                 first_step=first_step,
                 model_state=model_state,
+                last_step_only=True,
             )
             cond_logits, uncond_logits = all_logits.split(B, dim=0)
             logits = uncond_logits + (cond_logits - uncond_logits) * cfg_coef
 
-        logits = logits[:, -1, :].float()  # [B, card] — last timestep
-        logits[:, 1393:] = -torch.inf      # mask reserved / OOV tokens
+        logits = logits.squeeze(1).float()  # [B, card] — last timestep
+        if self.card >= 1393:
+            logits[:, [0, 2]] = -torch.inf  # PAD (0) and UNK (2) cannot be generated
+            logits[:, 1393:] = -torch.inf   # mask reserved / OOV tokens
+        elif logits.shape[-1] > 1393:
+            logits[:, 1393:] = -torch.inf
         if forbidden_tokens is not None:
             logits[:, forbidden_tokens] = -torch.inf
         return logits
@@ -356,7 +366,9 @@ class LMModel(nn.Module):
 
         # Accumulated log-prob scores, one per beam row.
         beam_scores = torch.zeros(eff_batch, device=device, dtype=torch.float)
-        cache_states = [s for s in model_state.values() if "cache" in s]
+        cache_states = [
+            s for s in model_state.values() if isinstance(s, dict) and "cache" in s
+        ]
         sample_base = (
             torch.arange(num_samples, device=device).repeat_interleave(beam_size)
             * beam_size
@@ -415,11 +427,10 @@ class LMModel(nn.Module):
                         forbidden_tokens=forbidden_tokens,
                     )  # [B]
 
-                    input_T = input_.shape[-1]
                     increment_steps(
                         self.transformer,
                         model_state,
-                        increment=input_T + (prepend_length if first_iter else 0),
+                        increment=input_.shape[-1] + prepend_length if first_iter else 1,
                     )
 
                     gen_sequence[:, offset + 1] = next_token
@@ -441,11 +452,10 @@ class LMModel(nn.Module):
                         first_step=first_iter, cfg_coef=cfg_coef,
                         forbidden_tokens=forbidden_tokens,
                     )  # [eff_batch, card]
-                    input_T = input_.shape[-1]
                     increment_steps(
                         self.transformer,
                         model_state,
-                        increment=input_T + (prepend_length if first_iter else 0),
+                        increment=input_.shape[-1] + prepend_length if first_iter else 1,
                     )
 
                     log_probs = torch.log_softmax(logits, dim=-1)
@@ -491,7 +501,7 @@ class LMModel(nn.Module):
                     beam_scores = new_scores.reshape(-1) / lp[prev_global]
 
                     # Reorder generation sequences to match winning beams.
-                    gen_sequence[:, : offset + 2] = gen_sequence[prev_global, : offset + 2]
+                    gen_sequence[:, : offset + 1] = gen_sequence[prev_global, : offset + 1]
                     beam_has_ended = beam_has_ended[prev_global]
                     beam_eos_pos = beam_eos_pos[prev_global]
 
@@ -501,10 +511,10 @@ class LMModel(nn.Module):
                         if (cfg_coef != 1.0)
                         else prev_global
                     )
+                    used = cache_states[0]["offset"]
                     for state in cache_states:
-                        cache = state["cache"]
-                        used = state["offset"]
-                        cache[:, :, :, :used] = cache[:, reorder, :, :used]
+                        c_used = state["cache"][:, :, :, :used]
+                        c_used.copy_(c_used.index_select(1, reorder))
 
                     # Write next token
                     gen_sequence[:, offset + 1] = next_token

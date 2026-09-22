@@ -179,7 +179,7 @@ class OpenNoteTracker:
 
         if etype == "shift":
             if event.value > 0:
-                self._tick_state = self._start_tick + event.value
+                self._tick_state = max(self._tick_state, self._start_tick + event.value)
         elif etype == "program":
             self._program = event.value
         elif etype == "velocity":
