@@ -343,6 +343,7 @@ class TranscriptionModel:
         no_eos_is_ok: bool = True,
         beam_size: int = 1,
         prelude_forcing: bool = True,
+        max_gen_len: int = 5000,
     ) -> Iterator[NoteStartEvent | NoteEndEvent | ProgressEvent]:
         """Transcribe audio into a stream of note events.
 
@@ -365,6 +366,10 @@ class TranscriptionModel:
         1; combining it with ``batch_size > 1`` raises ValueError — pass
         ``prelude_forcing=False`` explicitly to trade chunk-boundary quality
         for batched throughput.
+
+        ``max_gen_len`` (default 5000) caps how many tokens each chunk may
+        generate before being cut off. Raise it if long/dense chunks are
+        hitting the "did not emit EOS" warning below.
 
         The event times may all carry the same small lag (up to ~25 ms) due to model
         bias. Taking it out needs the beat grid and every onset in the transcription,
@@ -407,7 +412,6 @@ class TranscriptionModel:
 
         segment_samples = int(_SEGMENT_DURATION * _SAMPLE_RATE)
         num_chunks = math.ceil(total_samples / segment_samples)
-        max_gen_len = 5000
         print(
             f"[muscriptor] audio: {total_duration:.1f}s → {num_chunks} chunk(s) of {_SEGMENT_DURATION}s",
             file=sys.stderr,
