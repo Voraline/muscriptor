@@ -602,7 +602,9 @@ class TranscriptionModel:
                 beam_size=beam_size,
                 forbidden_tokens=forbidden_tokens,
             ):
-                row = step.tolist()  # one token per chunk: [n]
+                row = getattr(step, "_cpu_list", None)
+                if row is None:
+                    row = step.tolist()  # one token per chunk: [n]
                 for j in range(n):
                     if done[j]:
                         continue
@@ -719,7 +721,7 @@ class TranscriptionModel:
             return None
         tensor, sample_rate = audio if isinstance(audio, tuple) else (audio, None)
         try:
-            return detect_grid(self._load_wav(tensor, sample_rate), _SAMPLE_RATE)
+            return detect_grid(self._load_wav_cpu(tensor, sample_rate), _SAMPLE_RATE)
         except BeatDetectionError as e:
             if mode is True:
                 raise
@@ -800,10 +802,10 @@ class TranscriptionModel:
         raise ValueError(f"Unknown instrument name: {instrument!r}")
 
     # ------------------------------------------------------------------
-    def _load_wav(
+    def _load_wav_cpu(
         self, audio: str | Path | torch.Tensor, sample_rate: int | None
     ) -> torch.Tensor:
-        """Return mono float32 waveform at 16 kHz, shape [1, T]."""
+        """Return mono float32 waveform at 16 kHz on CPU, shape [1, T]."""
         if isinstance(audio, (str, Path)):
             wav = load_audio(audio, target_sr=_SAMPLE_RATE)
         else:
@@ -816,6 +818,13 @@ class TranscriptionModel:
                 wav = wav.mean(0, keepdim=True)
             if sample_rate is not None and sample_rate != _SAMPLE_RATE:
                 wav = resample(wav, sample_rate, _SAMPLE_RATE)
+        return wav.cpu() if (wav.is_cuda or wav.is_mps) else wav
+
+    def _load_wav(
+        self, audio: str | Path | torch.Tensor, sample_rate: int | None
+    ) -> torch.Tensor:
+        """Return mono float32 waveform at 16 kHz on self._device, shape [1, T]."""
+        wav = self._load_wav_cpu(audio, sample_rate)
         return wav.to(self._device)
 
     def _build_conditions(

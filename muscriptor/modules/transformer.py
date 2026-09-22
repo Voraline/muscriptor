@@ -50,10 +50,10 @@ class StreamingMultiheadAttention(StatefulModule):
 
     def init_state(self, batch_size: int, sequence_length: int) -> State:
         weight = self.in_proj_weight
-        # Allocate an initial capacity of at most 1024 tokens instead of the full
-        # sequence length. This reduces peak VRAM usage by over 80% for typical
-        # chunks while dynamically growing if generation exceeds 1024 tokens.
-        initial_capacity = min(1024, sequence_length)
+        # Allocate up to 2048 tokens initially, or full sequence_length if <= 2048.
+        # This avoids repeated dynamic reallocations for standard chunks while
+        # keeping initial VRAM usage modest.
+        initial_capacity = min(2048, sequence_length)
         return {
             # Layout is [2, batch, heads, time, head_dim] so the per-head
             # [time, head_dim] slice SDPA reads is contiguous (no per-layer,
@@ -84,10 +84,10 @@ class StreamingMultiheadAttention(StatefulModule):
         T = k.shape[2]
 
         if end + T > cache.shape[3]:
-            # Dynamically grow the cache capacity up to max_length (always >= end + T)
+            # Grow directly to max_length (always >= end + T) to eliminate repeated
+            # reallocations, memory copies, and fragmentation across layers.
             max_len = state.get("max_length", end + T)
-            target = max(cache.shape[3] * 2, end + T)
-            new_capacity = max(end + T, min(max_len, target))
+            new_capacity = max(end + T, max_len)
             new_cache = torch.empty(
                 (2, cache.shape[1], self.num_heads, new_capacity, self.dim_per_head),
                 device=cache.device,
@@ -201,6 +201,17 @@ class StreamingTransformer(StatefulModule):
         inv_freq = 1.0 / (max_period ** (adim / (half_dim - 1)))
         self.register_buffer("inv_freq", inv_freq.view(1, 1, -1), persistent=False)
 
+        # Precompute static sinusoidal position embeddings up to max_period to eliminate
+        # dynamic trigonometry kernel launches and tensor allocations during token decoding.
+        pos_table = create_sin_embedding(
+            torch.arange(int(max_period), dtype=torch.float32).unsqueeze(-1),
+            d_model,
+            max_period=max_period,
+            dtype=torch.float32,
+            inv_freq=inv_freq.view(1, 1, -1),
+        ).squeeze(1)
+        self.register_buffer("pos_table", pos_table, persistent=False)
+
         self.layers = nn.ModuleList(
             [
                 StreamingTransformerLayer(
@@ -239,10 +250,13 @@ class StreamingTransformer(StatefulModule):
         )
 
         if T == 1:
-            positions = offsets.view(-1, 1, 1)
-            pos_emb = create_sin_embedding(
-                positions, C, max_period=self.max_period, dtype=torch.float32, inv_freq=self.inv_freq
-            )
+            if (offsets >= 0).all() and (offsets < self.pos_table.shape[0]).all():
+                pos_emb = self.pos_table[offsets].unsqueeze(1)
+            else:
+                positions = offsets.view(-1, 1, 1)
+                pos_emb = create_sin_embedding(
+                    positions, C, max_period=self.max_period, dtype=torch.float32, inv_freq=self.inv_freq
+                )
             x = x.add_(pos_emb.to(x.dtype))
         else:
             positions = torch.arange(T, device=x.device).view(1, -1, 1) + offsets.view(-1, 1, 1)

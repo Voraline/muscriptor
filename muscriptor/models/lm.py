@@ -229,9 +229,10 @@ class LMModel(nn.Module):
             cond_logits, uncond_logits = all_logits.split(B, dim=0)
             logits = uncond_logits + (cond_logits - uncond_logits) * cfg_coef
 
-        logits = logits.squeeze(1).float()  # [B, card] — last timestep
+        logits = logits.squeeze(1)  # [B, card] — last timestep
         if self.card >= 1393:
-            logits[:, [0, 2]] = -torch.inf  # PAD (0) and UNK (2) cannot be generated
+            logits[:, 0] = -torch.inf  # PAD (0) cannot be generated
+            logits[:, 2] = -torch.inf  # UNK (2) cannot be generated
             logits[:, 1393:] = -torch.inf   # mask reserved / OOV tokens
         elif logits.shape[-1] > 1393:
             logits[:, 1393:] = -torch.inf
@@ -257,10 +258,10 @@ class LMModel(nn.Module):
             forbidden_tokens=forbidden_tokens,
         )
         if use_sampling and temp > 0.0:
-            probs = torch.softmax(logits / temp, dim=-1)
+            probs = torch.softmax(logits.float() / temp, dim=-1)
             next_tokens = utils.sample_from_probs(probs, top_p=top_p, top_k=top_k)[:, 0]
         else:
-            next_tokens = torch.argmax(logits, dim=-1)  # [B]
+            next_tokens = torch.argmax(logits, dim=-1)  # [B] — runs directly without fp32 upcasting
         return next_tokens  # [B]
 
     # ------------------------------------------------------------------
@@ -387,16 +388,19 @@ class LMModel(nn.Module):
             del _eos_mask0
 
         # For greedy/sampling emit prompt steps now; beam search emits at the end.
-        has_ended = None
+        has_ended_list = [False] * eff_batch
         all_done = False
         if beam_size == 1:
-            if early_stop_on_token is not None:
-                has_ended = (
+            if early_stop_on_token is not None and start_offset > 0:
+                prompt_matches = (
                     gen_sequence[:, : start_offset + 1] == early_stop_on_token
-                ).any(dim=-1)
-                all_done = bool(has_ended.all().item())
+                ).any(dim=-1).tolist()
+                has_ended_list = [bool(m) for m in prompt_matches]
+                all_done = all(has_ended_list)
             for t in range(start_offset):
-                yield gen_sequence[:, t + 1]
+                step = gen_sequence[:, t + 1]
+                step._cpu_list = step.tolist()
+                yield step
 
         last_offset = start_offset - 1
         with self.autocast:
@@ -435,15 +439,21 @@ class LMModel(nn.Module):
 
                     gen_sequence[:, offset + 1] = next_token
 
-                    if early_stop_on_token is not None:
-                        new_eos = next_token == early_stop_on_token
-                        if eff_batch == 1:
-                            all_done = bool(new_eos.item())
-                        else:
-                            has_ended = has_ended | new_eos
-                            all_done = bool(has_ended.all().item())
+                    # Single D2H transfer: fetch CPU token list once, eliminating the .item() GPU sync stall
+                    next_token_cpu = next_token.tolist()
 
-                    yield gen_sequence[:, offset + 1]  # [num_samples]
+                    if early_stop_on_token is not None:
+                        if eff_batch == 1:
+                            all_done = (next_token_cpu[0] == early_stop_on_token)
+                        else:
+                            for b_idx in range(eff_batch):
+                                if next_token_cpu[b_idx] == early_stop_on_token:
+                                    has_ended_list[b_idx] = True
+                            all_done = all(has_ended_list)
+
+                    step = gen_sequence[:, offset + 1]
+                    step._cpu_list = next_token_cpu
+                    yield step  # [num_samples]
 
                 else:
                     # ── Beam search step ──────────────────────────────────
@@ -458,7 +468,7 @@ class LMModel(nn.Module):
                         increment=input_.shape[-1] + prepend_length if first_iter else 1,
                     )
 
-                    log_probs = torch.log_softmax(logits, dim=-1)
+                    log_probs = torch.log_softmax(logits.float(), dim=-1)
 
                     # Top beam_size candidate tokens per current beam
                     topk_scores, topk_tokens = torch.topk(log_probs, k=beam_size, dim=-1)

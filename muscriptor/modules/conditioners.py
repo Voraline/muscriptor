@@ -177,14 +177,54 @@ class MelSpectrogramConditioner(nn.Module):
 
     def forward(self, x: WavCondition) -> ConditionType:
         _, lengths, *_ = x
+        B = x.wav.shape[0]
+
+        # Fast path when all or some batch items are null/zero (e.g. CFG unconditional branch)
+        if lengths is not None and (lengths == 0).any():
+            if (lengths == 0).all():
+                # Entire batch is null; return zero embeddings directly without running STFT
+                T_frames = (x.wav.shape[-1] // self.hop_length) + 1 if x.wav.shape[-1] > 1 else 1
+                embeds = torch.zeros(
+                    B, T_frames, self.output_dim, device=self.device, dtype=self.output_proj.weight.dtype
+                )
+                mask = torch.zeros(B, T_frames, device=self.device, dtype=torch.int32)
+                return embeds, mask
+
+            # Mixed batch (real audio + null conditions for CFG)
+            # Only compute STFT on active non-zero rows
+            active_mask = lengths > 0
+            active_indices = active_mask.nonzero(as_tuple=True)[0]
+            active_x = WavCondition(
+                wav=x.wav[active_indices],
+                length=lengths[active_indices],
+                sample_rate=x.sample_rate,
+                path=x.path,
+                seek_time=x.seek_time,
+            )
+            with torch.no_grad():
+                active_embeds = self._mel_embedding(active_x)
+            active_embeds = active_embeds.to(self.output_proj.weight)
+            active_proj = self.output_proj(active_embeds)
+
+            T_frames = active_proj.shape[1]
+            embeds = torch.zeros(
+                B, T_frames, self.output_dim, device=self.device, dtype=self.output_proj.weight.dtype
+            )
+            embeds[active_indices] = active_proj
+            frame_lengths = lengths / (self.sample_rate // self.frame_rate)
+            mask = length_to_mask(frame_lengths, max_len=T_frames).int()
+            mask_f = mask.float().unsqueeze(-1).to(embeds.device)
+            embeds = embeds.mul_(mask_f)
+            return embeds, mask
+
         with torch.no_grad():
             embeds = self._mel_embedding(x)
         embeds = embeds.to(self.output_proj.weight)
         embeds = self.output_proj(embeds)
 
         if lengths is not None:
-            lengths = lengths / (self.sample_rate // self.frame_rate)
-            mask = length_to_mask(lengths, max_len=embeds.shape[1]).int()
+            frame_lengths = lengths / (self.sample_rate // self.frame_rate)
+            mask = length_to_mask(frame_lengths, max_len=embeds.shape[1]).int()
         else:
             mask = torch.ones_like(embeds[..., 0])
         mask_f = mask.float().unsqueeze(-1).to(embeds.device)
