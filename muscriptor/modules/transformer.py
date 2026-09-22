@@ -197,14 +197,14 @@ class StreamingTransformer(StatefulModule):
         assert d_model % num_heads == 0
         self.max_period = max_period
         half_dim = d_model // 2
-        adim = torch.arange(half_dim, dtype=torch.float32)
+        adim = torch.arange(half_dim, dtype=torch.float32, device=device)
         inv_freq = 1.0 / (max_period ** (adim / (half_dim - 1)))
         self.register_buffer("inv_freq", inv_freq.view(1, 1, -1), persistent=False)
 
         # Precompute static sinusoidal position embeddings up to max_period to eliminate
         # dynamic trigonometry kernel launches and tensor allocations during token decoding.
         pos_table = create_sin_embedding(
-            torch.arange(int(max_period), dtype=torch.float32).unsqueeze(-1),
+            torch.arange(int(max_period), dtype=torch.float32, device=device).unsqueeze(-1),
             d_model,
             max_period=max_period,
             dtype=torch.float32,
@@ -250,7 +250,11 @@ class StreamingTransformer(StatefulModule):
         )
 
         if T == 1:
-            if (offsets >= 0).all() and (offsets < self.pos_table.shape[0]).all():
+            if (
+                self.pos_table.device == offsets.device
+                and (offsets >= 0).all()
+                and (offsets < self.pos_table.shape[0]).all()
+            ):
                 pos_emb = self.pos_table[offsets].unsqueeze(1)
             else:
                 positions = offsets.view(-1, 1, 1)
