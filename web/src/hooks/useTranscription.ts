@@ -10,7 +10,7 @@ import type { AudioEngine } from "../audio";
 import type { ProgressEstimator } from "../progress";
 import { PianoRoll, type BeatGrid, type RollNote } from "../pianoroll";
 import type { ExportNote } from "../export";
-import { generationToForm, type GenerationSettings } from "../generation";
+import { GenerationToForm, type GenerationSettings } from "../generation";
 
 type StartEvent = {
   type: "start";
@@ -223,7 +223,7 @@ export function useTranscription(deps: TranscriptionDeps) {
     try {
       const cond = getConditioning();
       const extra = {
-        ...generationToForm(getGeneration()),
+        ...GenerationToForm(getGeneration()),
         ...(cond.length > 0 ? { instruments: cond } : {}),
       };
       for await (const raw of streamTranscribeWithRetry("/transcribe", file, {

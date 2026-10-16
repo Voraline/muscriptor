@@ -357,6 +357,11 @@ class TranscriptionModel:
         no_eos_is_ok: bool = True,
         beam_size: int = 1,
         prelude_forcing: bool = True,
+        max_gen_len: int = 2000,
+        top_k: int = 0,
+        top_p: float = 0.0,
+        beam_length_score_alpha: float = 0.75,
+        seed: int | None = None,
     ) -> Iterator[NoteStartEvent | NoteEndEvent | ProgressEvent]:
         """Transcribe audio into a stream of note events.
 
@@ -391,6 +396,8 @@ class TranscriptionModel:
         only care about notes can ignore them.
         """
         batch_size = self._resolve_batch_size(batch_size, prelude_forcing)
+        if seed is not None:
+            torch.manual_seed(seed)
 
         # Exact names only here — the CLI resolves abbreviations before
         # calling in (resolve_instrument_names).
@@ -421,7 +428,6 @@ class TranscriptionModel:
 
         segment_samples = int(_SEGMENT_DURATION * _SAMPLE_RATE)
         num_chunks = math.ceil(total_samples / segment_samples)
-        max_gen_len = 2000
         print(
             f"[muscriptor] audio: {total_duration:.1f}s → {num_chunks} chunk(s) of {_SEGMENT_DURATION}s",
             file=sys.stderr,
@@ -459,6 +465,9 @@ class TranscriptionModel:
                 prelude_forcing,
                 beam_size,
                 forbidden_tokens,
+                top_k,
+                top_p,
+                beam_length_score_alpha,
             ),
             self._tokenizer._vocab,
             self._instrument_for_program,
@@ -510,6 +519,9 @@ class TranscriptionModel:
         prelude_forcing: bool = True,
         beam_size: int = 1,
         forbidden_tokens: torch.Tensor | None = None,
+        top_k: int = 0,
+        top_p: float = 0.0,
+        beam_length_score_alpha: float = 0.75,
     ) -> Iterator[int | ChunkBoundary | ProgressEvent]:
         """Generate tokens and yield them per chunk, as soon as they are ready.
 
@@ -577,11 +589,12 @@ class TranscriptionModel:
                 max_gen_len=max_gen_len,
                 use_sampling=use_sampling,
                 temp=temperature,
-                top_k=0,
-                top_p=0.0,
+                top_k=top_k,
+                top_p=top_p,
                 cfg_coef=cfg_coef,
                 early_stop_on_token=eos_id,
                 beam_size=beam_size,
+                beam_length_score_alpha=beam_length_score_alpha,
                 forbidden_tokens=forbidden_tokens,
             ):
                 row = step.tolist()  # one token per chunk: [n]
@@ -645,6 +658,11 @@ class TranscriptionModel:
         prelude_forcing: bool = True,
         detect_tempo: TempoDetection = "best-effort",
         export: ExportOptions | None = None,
+        max_gen_len: int = 2000,
+        top_k: int = 0,
+        top_p: float = 0.0,
+        beam_length_score_alpha: float = 0.75,
+        seed: int | None = None,
     ) -> tuple[bytes, BeatGrid | None]:
         """Same as :meth:`transcribe`, but as a MIDI file plus the grid it used.
 
@@ -672,6 +690,11 @@ class TranscriptionModel:
                 no_eos_is_ok=no_eos_is_ok,
                 beam_size=beam_size,
                 prelude_forcing=prelude_forcing,
+                max_gen_len=max_gen_len,
+                top_k=top_k,
+                top_p=top_p,
+                beam_length_score_alpha=beam_length_score_alpha,
+                seed=seed,
             )
         )
         if beat_grid is not None or export.bpm is not None:

@@ -189,6 +189,11 @@ def create_app(
         cfg_coef: float | None,
         prelude_forcing: bool | None,
         dtype: str | None,
+        max_gen_len: int | None = None,
+        top_k: int | None = None,
+        top_p: float | None = None,
+        beam_length_score_alpha: float | None = None,
+        seed: int | None = None,
     ) -> tuple[dict, str | None]:
         merged = dict(gen_defaults)
         overrides = dict(
@@ -197,12 +202,27 @@ def create_app(
             temperature=temperature,
             cfg_coef=cfg_coef,
             prelude_forcing=prelude_forcing,
+            max_gen_len=max_gen_len,
+            top_k=top_k,
+            top_p=top_p,
+            beam_length_score_alpha=beam_length_score_alpha,
+            seed=seed,
         )
         merged.update({k: v for k, v in overrides.items() if v is not None})
         if merged.get("beam_size", 1) < 1 or merged.get("beam_size", 1) > 32:
             raise HTTPException(status_code=400, detail="beam_size must be 1-32")
         if merged.get("temperature", 1.0) <= 0:
             raise HTTPException(status_code=400, detail="temperature must be > 0")
+        if not 16 <= merged.get("max_gen_len", 2000) <= 8000:
+            raise HTTPException(status_code=400, detail="max_gen_len must be 16-8000")
+        if merged.get("top_k", 0) < 0:
+            raise HTTPException(status_code=400, detail="top_k must be >= 0")
+        if not 0.0 <= merged.get("top_p", 0.0) <= 1.0:
+            raise HTTPException(status_code=400, detail="top_p must be 0-1")
+        if merged.get("beam_length_score_alpha", 0.75) < 0:
+            raise HTTPException(
+                status_code=400, detail="beam_length_score_alpha must be >= 0"
+            )
         if dtype is not None and dtype not in allowed_dtypes:
             raise HTTPException(
                 status_code=400,
@@ -310,6 +330,11 @@ def create_app(
             "temperature": gen_defaults.get("temperature", 1.0),
             "cfg_coef": gen_defaults.get("cfg_coef", 1.0),
             "prelude_forcing": gen_defaults.get("prelude_forcing", True),
+            "max_gen_len": gen_defaults.get("max_gen_len", 2000),
+            "top_k": gen_defaults.get("top_k", 0),
+            "top_p": gen_defaults.get("top_p", 0.0),
+            "beam_length_score_alpha": gen_defaults.get("beam_length_score_alpha", 0.75),
+            "seed": gen_defaults.get("seed"),
         }
 
     @app.get("/health")
@@ -342,10 +367,25 @@ def create_app(
         cfg_coef: Annotated[float | None, Form()] = None,
         prelude_forcing: Annotated[bool | None, Form()] = None,
         dtype: Annotated[str | None, Form()] = None,
+        max_gen_len: Annotated[int | None, Form()] = None,
+        top_k: Annotated[int | None, Form()] = None,
+        top_p: Annotated[float | None, Form()] = None,
+        beam_length_score_alpha: Annotated[float | None, Form()] = None,
+        seed: Annotated[int | None, Form()] = None,
         x_client_id: Annotated[str | None, Header()] = None,
     ) -> StreamingResponse:
         request_gen, request_dtype = resolve_generation(
-            beam_size, use_sampling, temperature, cfg_coef, prelude_forcing, dtype
+            beam_size,
+            use_sampling,
+            temperature,
+            cfg_coef,
+            prelude_forcing,
+            dtype,
+            max_gen_len,
+            top_k,
+            top_p,
+            beam_length_score_alpha,
+            seed,
         )
         data = await file.read()
         # PCM WAV goes through the stdlib reader (keeps WAV decoding byte-for-byte
@@ -489,6 +529,11 @@ def create_app(
         cfg_coef: Annotated[float | None, Form()] = None,
         prelude_forcing: Annotated[bool | None, Form()] = None,
         dtype: Annotated[str | None, Form()] = None,
+        max_gen_len: Annotated[int | None, Form()] = None,
+        top_k: Annotated[int | None, Form()] = None,
+        top_p: Annotated[float | None, Form()] = None,
+        beam_length_score_alpha: Annotated[float | None, Form()] = None,
+        seed: Annotated[int | None, Form()] = None,
         x_client_id: Annotated[str | None, Header()] = None,
     ) -> Response:
         """Transcribe an audio file and return the .mid file directly.
@@ -499,7 +544,17 @@ def create_app(
         response straight to disk.
         """
         request_gen, request_dtype = resolve_generation(
-            beam_size, use_sampling, temperature, cfg_coef, prelude_forcing, dtype
+            beam_size,
+            use_sampling,
+            temperature,
+            cfg_coef,
+            prelude_forcing,
+            dtype,
+            max_gen_len,
+            top_k,
+            top_p,
+            beam_length_score_alpha,
+            seed,
         )
         data = await file.read()
         try:

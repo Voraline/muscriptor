@@ -555,6 +555,22 @@ def serve(
             help="Teacher-force each chunk's tie prologue from the previous chunk",
         ),
     ] = True,
+    max_gen_len: Annotated[
+        int, typer.Option("--max-gen-len", min=16, help="Max tokens per 5s chunk")
+    ] = 2000,
+    top_k: Annotated[
+        int, typer.Option("--top-k", min=0, help="Top-k filter (0 = off)")
+    ] = 0,
+    top_p: Annotated[
+        float, typer.Option("--top-p", min=0.0, max=1.0, help="Nucleus filter (0 = off)")
+    ] = 0.0,
+    beam_length_score_alpha: Annotated[
+        float,
+        typer.Option("--beam-length-alpha", min=0.0, help="Beam length normalization"),
+    ] = 0.75,
+    seed: Annotated[
+        int | None, typer.Option("--seed", help="Random seed for sampling")
+    ] = None,
 ):
     """Run the HTTP transcription server (POST /transcribe → SSE event stream)."""
     import logging
@@ -577,6 +593,11 @@ def serve(
         temperature=temperature,
         cfg_coef=cfg_coef,
         prelude_forcing=prelude_forcing,
+        max_gen_len=max_gen_len,
+        top_k=top_k,
+        top_p=top_p,
+        beam_length_score_alpha=beam_length_score_alpha,
+        seed=seed,
     )
     fastapi_app = create_app(
         model,

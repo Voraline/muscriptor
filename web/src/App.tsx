@@ -10,7 +10,7 @@ import {
 import { Controls } from "./components/Controls";
 import { OutputBar } from "./components/OutputBar";
 import { TimingPanel } from "./components/TimingPanel";
-import { DEFAULT_GENERATION, type GenerationSettings } from "./generation";
+import { DefaultGeneration, type GenerationSettings } from "./generation";
 import { correctedGrid, NO_OVERRIDES, type TimingOverrides } from "./export";
 import { FeedbackLine } from "./components/FeedbackLine";
 import { PianoRollCanvas } from "./components/PianoRollCanvas";
@@ -93,7 +93,7 @@ export function App() {
   const [stereo, setStereo] = useState(false);
   const [userScrolled, setUserScrolled] = useState(false);
   const [condSelected, setCondSelected] = useState<Set<string>>(() => new Set());
-  const [generation, setGeneration] = useState<GenerationSettings>(DEFAULT_GENERATION);
+  const [generation, setGeneration] = useState<GenerationSettings>(DefaultGeneration);
   // True while a file is being dragged over the window. On the welcome screen
   // this swaps the panel's prompt in place instead of showing the overlay.
   const [dragging, setDragging] = useState(false);
