@@ -1,4 +1,4 @@
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { Button } from "./Button";
 import {
   DefaultGeneration,
@@ -120,11 +120,65 @@ function Field(Props: { Label: string; Hint?: string; children: React.ReactNode 
   );
 }
 
-function ClampNumber(Raw: string, Spec: NumericSpec, Fallback: number): number {
+// Returns null when the text isn't a usable number yet (empty, "-", "1e", ...).
+function ClampNumber(Raw: string, Spec: NumericSpec): number | null {
   const Parsed = Number(Raw);
-  if (Raw.trim() === "" || !Number.isFinite(Parsed)) return Fallback;
+  if (Raw.trim() === "" || !Number.isFinite(Parsed)) return null;
   const Value = Spec.Integer ? Math.round(Parsed) : Parsed;
   return Math.min(Spec.Max, Math.max(Spec.Min, Value));
+}
+
+// Keeps the raw text while the user types so partial input like "0" or "5"
+// is not snapped to the minimum mid-edit. The value is clamped on blur, and
+// valid in-progress input is still pushed up immediately.
+function NumericField(Props: {
+  Spec: NumericSpec;
+  Value: number;
+  Fallback: number;
+  Disabled: boolean;
+  OnCommit: (Next: number) => void;
+}) {
+  const { Spec, Value, Fallback, Disabled, OnCommit } = Props;
+  const [Draft, SetDraft] = useState(String(Value));
+  const Focused = useRef(false);
+
+  // Follow external changes (Reset, server defaults) unless the user is typing.
+  useEffect(() => {
+    if (!Focused.current) SetDraft(String(Value));
+  }, [Value]);
+
+  return (
+    <input
+      className={FieldClass}
+      type="number"
+      min={Spec.Min}
+      max={Spec.Max}
+      step={Spec.Step}
+      disabled={Disabled}
+      value={Draft}
+      onFocus={() => {
+        Focused.current = true;
+      }}
+      onChange={(E) => {
+        SetDraft(E.target.value);
+        const Next = ClampNumber(E.target.value, Spec);
+        if (Next !== null) OnCommit(Next);
+      }}
+      onBlur={(E) => {
+        Focused.current = false;
+        const Next = ClampNumber(E.target.value, Spec) ?? Fallback;
+        OnCommit(Next);
+        SetDraft(String(Next));
+      }}
+    />
+  );
+}
+
+// Survives the panel unmounting/remounting within one page load.
+let CachedServerDefaults: GenerationSettings | null = null;
+
+function SameSettings(A: GenerationSettings, B: GenerationSettings): boolean {
+  return (Object.keys(A) as (keyof GenerationSettings)[]).every((K) => A[K] === B[K]);
 }
 
 function ParseSeed(Raw: string): number | null {
@@ -143,12 +197,26 @@ export function GenerationPanel(Props: {
   const [ServerDefaults, SetServerDefaults] =
     useState<GenerationSettings>(DefaultGeneration);
 
+  const ValueRef = useRef(Value);
+  ValueRef.current = Value;
+  const OnChangeRef = useRef(OnChange);
+  OnChangeRef.current = OnChange;
+
   useEffect(() => {
+    // Already fetched once this page load: reuse it and leave the user's
+    // current settings alone (the panel remounts when the screen changes).
+    if (CachedServerDefaults) {
+      SetServerDefaults(CachedServerDefaults);
+      return;
+    }
     let Cancelled = false;
     FetchGenerationDefaults().then((D) => {
-      if (Cancelled || !D) return;
+      if (!D) return;
+      CachedServerDefaults = D;
+      if (Cancelled) return;
       SetServerDefaults(D);
-      OnChange(D);
+      // Only adopt the server defaults if the user hasn't changed anything yet.
+      if (SameSettings(ValueRef.current, DefaultGeneration)) OnChangeRef.current(D);
     });
     return () => {
       Cancelled = true;
@@ -221,23 +289,12 @@ export function GenerationPanel(Props: {
               <div className="grid grid-cols-2 gap-4 max-[760px]:grid-cols-1">
                 {Section.Fields.map((Spec) => (
                   <Field key={Spec.Key} Label={Spec.Label} Hint={Spec.Hint}>
-                    <input
-                      className={FieldClass}
-                      type="number"
-                      min={Spec.Min}
-                      max={Spec.Max}
-                      step={Spec.Step}
-                      disabled={IsDisabled(Spec)}
-                      value={Value[Spec.Key]}
-                      onChange={(E) =>
-                        Patch({
-                          [Spec.Key]: ClampNumber(
-                            E.target.value,
-                            Spec,
-                            DefaultGeneration[Spec.Key],
-                          ),
-                        })
-                      }
+                    <NumericField
+                      Spec={Spec}
+                      Value={Value[Spec.Key]}
+                      Fallback={ServerDefaults[Spec.Key]}
+                      Disabled={IsDisabled(Spec)}
+                      OnCommit={(Next) => Patch({ [Spec.Key]: Next })}
                     />
                   </Field>
                 ))}
