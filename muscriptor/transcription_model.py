@@ -269,6 +269,20 @@ class TranscriptionModel:
         self._tokenizer = tokenizer
         self._device = device
         self._instrument_for_program = _build_instrument_for_program(tokenizer)
+        self._dtype = next(model.parameters()).dtype
+
+    @property
+    def dtype(self) -> torch.dtype:
+        return self._dtype
+
+    def set_dtype(self, dtype: str | torch.dtype) -> None:
+        if isinstance(dtype, str):
+            dtype = getattr(torch, dtype)
+        if dtype == self._dtype:
+            return
+        self._model.to(dtype)
+        self._model.condition_provider.float()
+        self._dtype = dtype
 
     @classmethod
     def load_model(
@@ -407,7 +421,7 @@ class TranscriptionModel:
 
         segment_samples = int(_SEGMENT_DURATION * _SAMPLE_RATE)
         num_chunks = math.ceil(total_samples / segment_samples)
-        max_gen_len = 5000
+        max_gen_len = 2000
         print(
             f"[muscriptor] audio: {total_duration:.1f}s → {num_chunks} chunk(s) of {_SEGMENT_DURATION}s",
             file=sys.stderr,

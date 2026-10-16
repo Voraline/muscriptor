@@ -10,7 +10,6 @@
 *.ogg
 *.sf2
 web/node_modules
-muscriptor/web_dist/
 web/tsconfig.tsbuildinfo
 /dist
 *.egg-info

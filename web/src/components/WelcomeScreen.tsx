@@ -8,6 +8,8 @@ import {
 import clsx from "clsx";
 import { Button } from "./Button";
 import { ConditioningPanel } from "./ConditioningPanel";
+import { GenerationPanel } from "./GenerationPanel";
+import type { GenerationSettings } from "../generation";
 import type { AppError, SubmitState } from "../App";
 
 const SERVER_DOWN = "The muscriptor server is temporarily unavailable.";
@@ -49,6 +51,8 @@ export function WelcomeScreen(props: {
   onUseExample: () => Promise<void>;
   condSelected: Set<string>;
   onCondChange: (next: Set<string>) => void;
+  generation: GenerationSettings;
+  onGenerationChange: (next: GenerationSettings) => void;
   onTranscribe: () => void;
   /** Where the submitted upload stands; drives the CTA's label + disabled state
    *  (the screen stays put until the server accepts it). */
@@ -67,6 +71,8 @@ export function WelcomeScreen(props: {
     onUseExample,
     condSelected,
     onCondChange,
+    generation,
+    onGenerationChange,
     onTranscribe,
     submitState,
     onCancelSubmit,
@@ -198,6 +204,7 @@ export function WelcomeScreen(props: {
       {error?.kind !== "server" && selectedFile !== null && (
         <>
           <ConditioningPanel selected={condSelected} onChange={onCondChange} />
+          <GenerationPanel value={generation} onChange={onGenerationChange} />
           <div className="flex items-center justify-end gap-5">
             {submitting && (
               <Button

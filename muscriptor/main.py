@@ -534,6 +534,27 @@ def serve(
             ),
         ),
     ] = None,
+    beam_size: Annotated[
+        int,
+        typer.Option("--beam-size", min=1, help="Beam search width (1 = greedy)"),
+    ] = 1,
+    sampling: Annotated[
+        bool,
+        typer.Option("--sampling", help="Use temperature sampling instead of greedy"),
+    ] = False,
+    temperature: Annotated[
+        float, typer.Option("--temperature", "-t", help="Sampling temperature")
+    ] = 1.0,
+    cfg_coef: Annotated[
+        float, typer.Option("--cfg-coef", help="Classifier-free guidance coefficient")
+    ] = 1.0,
+    prelude_forcing: Annotated[
+        bool,
+        typer.Option(
+            "--prelude-forcing/--no-prelude-forcing",
+            help="Teacher-force each chunk's tie prologue from the previous chunk",
+        ),
+    ] = True,
 ):
     """Run the HTTP transcription server (POST /transcribe → SSE event stream)."""
     import logging
@@ -550,7 +571,18 @@ def serve(
     typer.echo("Loading model…")
     model = _load_model(model_path, _device, dtype)
     web_dir = Path(__file__).resolve().parent / "web_dist"
-    fastapi_app = create_app(model, web_dir=web_dir if web_dir.is_dir() else None)
+    generation_defaults = dict(
+        beam_size=beam_size,
+        use_sampling=sampling,
+        temperature=temperature,
+        cfg_coef=cfg_coef,
+        prelude_forcing=prelude_forcing,
+    )
+    fastapi_app = create_app(
+        model,
+        web_dir=web_dir if web_dir.is_dir() else None,
+        generation_defaults=generation_defaults,
+    )
     uvicorn.run(fastapi_app, host=host, port=port)
 
 

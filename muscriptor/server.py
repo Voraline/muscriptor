@@ -173,8 +173,52 @@ def event_to_dict(ev: NoteStartEvent | NoteEndEvent) -> dict:
     }
 
 
-def create_app(model: TranscriptionModel, web_dir: str | Path | None = None) -> FastAPI:
+def create_app(
+    model: TranscriptionModel,
+    web_dir: str | Path | None = None,
+    generation_defaults: dict | None = None,
+) -> FastAPI:
     app = FastAPI(title="muscriptor")
+    gen_defaults = dict(generation_defaults or {})
+    allowed_dtypes = {"float32", "float16", "bfloat16"}
+
+    def resolve_generation(
+        beam_size: int | None,
+        use_sampling: bool | None,
+        temperature: float | None,
+        cfg_coef: float | None,
+        prelude_forcing: bool | None,
+        dtype: str | None,
+    ) -> tuple[dict, str | None]:
+        merged = dict(gen_defaults)
+        overrides = dict(
+            beam_size=beam_size,
+            use_sampling=use_sampling,
+            temperature=temperature,
+            cfg_coef=cfg_coef,
+            prelude_forcing=prelude_forcing,
+        )
+        merged.update({k: v for k, v in overrides.items() if v is not None})
+        if merged.get("beam_size", 1) < 1 or merged.get("beam_size", 1) > 32:
+            raise HTTPException(status_code=400, detail="beam_size must be 1-32")
+        if merged.get("temperature", 1.0) <= 0:
+            raise HTTPException(status_code=400, detail="temperature must be > 0")
+        if dtype is not None and dtype not in allowed_dtypes:
+            raise HTTPException(
+                status_code=400,
+                detail=f"dtype must be one of {', '.join(sorted(allowed_dtypes))}",
+            )
+        return merged, dtype
+
+    def apply_dtype(dtype: str | None) -> None:
+        if dtype is None:
+            return
+        try:
+            model.set_dtype(dtype)
+        except Exception as e:
+            raise HTTPException(
+                status_code=400, detail=f"could not switch to {dtype}: {e}"
+            ) from e
 
     transcribe_lock = threading.Lock()
     # State of the run currently holding the lock (or the last one to have held
@@ -257,6 +301,17 @@ def create_app(model: TranscriptionModel, web_dir: str | Path | None = None) -> 
             current_client = client_id
         return cancel, _make_release_once(transcribe_lock)
 
+    @app.get("/settings")
+    def get_settings() -> dict:
+        return {
+            "dtype": str(model.dtype).removeprefix("torch."),
+            "beam_size": gen_defaults.get("beam_size", 1),
+            "use_sampling": gen_defaults.get("use_sampling", False),
+            "temperature": gen_defaults.get("temperature", 1.0),
+            "cfg_coef": gen_defaults.get("cfg_coef", 1.0),
+            "prelude_forcing": gen_defaults.get("prelude_forcing", True),
+        }
+
     @app.get("/health")
     async def health():
         return {"status": "ok"}
@@ -281,8 +336,17 @@ def create_app(model: TranscriptionModel, web_dir: str | Path | None = None) -> 
         instruments: Annotated[list[str], Form(default_factory=list)],
         # "true" fails loudly on tempo detection errors, "false" doesn't even try
         detect_tempo: Annotated[TempoDetection, Form()] = "best-effort",
+        beam_size: Annotated[int | None, Form()] = None,
+        use_sampling: Annotated[bool | None, Form()] = None,
+        temperature: Annotated[float | None, Form()] = None,
+        cfg_coef: Annotated[float | None, Form()] = None,
+        prelude_forcing: Annotated[bool | None, Form()] = None,
+        dtype: Annotated[str | None, Form()] = None,
         x_client_id: Annotated[str | None, Header()] = None,
     ) -> StreamingResponse:
+        request_gen, request_dtype = resolve_generation(
+            beam_size, use_sampling, temperature, cfg_coef, prelude_forcing, dtype
+        )
         data = await file.read()
         # PCM WAV goes through the stdlib reader (keeps WAV decoding byte-for-byte
         # identical to the CLI); anything that isn't a readable WAV (mp3, flac,
@@ -318,6 +382,11 @@ def create_app(model: TranscriptionModel, web_dir: str | Path | None = None) -> 
         cancel, release_lock = await acquire_transcribe_lock(
             x_client_id, cancellable=True
         )
+        try:
+            apply_dtype(request_dtype)
+        except HTTPException:
+            release_lock()
+            raise
 
         def gen():
             try:
@@ -331,6 +400,7 @@ def create_app(model: TranscriptionModel, web_dir: str | Path | None = None) -> 
                     instruments=instruments or None,
                     batch_size=1,
                     no_eos_is_ok=True,
+                    **request_gen,
                 ):
                     # A newer request preempted this run — stop generating
                     # (closing the model.transcribe generator) and release the
@@ -413,6 +483,12 @@ def create_app(model: TranscriptionModel, web_dir: str | Path | None = None) -> 
         instruments: Annotated[list[str], Form(default_factory=list)],
         # "true" fails loudly on tempo detection errors, "false" doesn't even try
         detect_tempo: Annotated[TempoDetection, Form()] = "best-effort",
+        beam_size: Annotated[int | None, Form()] = None,
+        use_sampling: Annotated[bool | None, Form()] = None,
+        temperature: Annotated[float | None, Form()] = None,
+        cfg_coef: Annotated[float | None, Form()] = None,
+        prelude_forcing: Annotated[bool | None, Form()] = None,
+        dtype: Annotated[str | None, Form()] = None,
         x_client_id: Annotated[str | None, Header()] = None,
     ) -> Response:
         """Transcribe an audio file and return the .mid file directly.
@@ -422,6 +498,9 @@ def create_app(model: TranscriptionModel, web_dir: str | Path | None = None) -> 
         Content-Disposition header, so a plain HTTP client can save the
         response straight to disk.
         """
+        request_gen, request_dtype = resolve_generation(
+            beam_size, use_sampling, temperature, cfg_coef, prelude_forcing, dtype
+        )
         data = await file.read()
         try:
             wav, sr = _read_wav_file(io.BytesIO(data))
@@ -461,11 +540,13 @@ def create_app(model: TranscriptionModel, web_dir: str | Path | None = None) -> 
             x_client_id, cancellable=False
         )
         try:
+            apply_dtype(request_dtype)
             midi_bytes, _ = await asyncio.to_thread(
                 model.transcribe_and_postprocess,
                 (wav, sr),
                 instruments=instruments or None,
                 detect_tempo=detect_tempo,
+                **request_gen,
             )
         except BeatDetectionError as e:
             # Only reachable with detect_tempo=true, where the caller wants an error

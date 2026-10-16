@@ -10,6 +10,7 @@ import type { AudioEngine } from "../audio";
 import type { ProgressEstimator } from "../progress";
 import { PianoRoll, type BeatGrid, type RollNote } from "../pianoroll";
 import type { ExportNote } from "../export";
+import { generationToForm, type GenerationSettings } from "../generation";
 
 type StartEvent = {
   type: "start";
@@ -73,6 +74,7 @@ export interface TranscriptionDeps {
   rollRef: RefObject<PianoRoll | null>;
   /** Conditioning instruments selected in the UI, read at submit time. */
   getConditioning: () => string[];
+  getGeneration: () => GenerationSettings;
   /** Smooths chunk-completion anchors into a live progress fraction + ETA. */
   progress: ProgressEstimator;
   /** Called when a (non-superseded) transcription fails, so the UI can recover.
@@ -105,6 +107,7 @@ export function useTranscription(deps: TranscriptionDeps) {
     audio,
     rollRef,
     getConditioning,
+    getGeneration,
     progress,
     onError,
     onAccepted,
@@ -219,7 +222,10 @@ export function useTranscription(deps: TranscriptionDeps) {
     let beatGrid: BeatGrid | null = null;
     try {
       const cond = getConditioning();
-      const extra = cond.length > 0 ? { instruments: cond } : undefined;
+      const extra = {
+        ...generationToForm(getGeneration()),
+        ...(cond.length > 0 ? { instruments: cond } : {}),
+      };
       for await (const raw of streamTranscribeWithRetry("/transcribe", file, {
         extra,
         signal: controller.signal,

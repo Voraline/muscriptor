@@ -10,6 +10,7 @@ import {
 import { Controls } from "./components/Controls";
 import { OutputBar } from "./components/OutputBar";
 import { TimingPanel } from "./components/TimingPanel";
+import { DEFAULT_GENERATION, type GenerationSettings } from "./generation";
 import { correctedGrid, NO_OVERRIDES, type TimingOverrides } from "./export";
 import { FeedbackLine } from "./components/FeedbackLine";
 import { PianoRollCanvas } from "./components/PianoRollCanvas";
@@ -92,6 +93,7 @@ export function App() {
   const [stereo, setStereo] = useState(false);
   const [userScrolled, setUserScrolled] = useState(false);
   const [condSelected, setCondSelected] = useState<Set<string>>(() => new Set());
+  const [generation, setGeneration] = useState<GenerationSettings>(DEFAULT_GENERATION);
   // True while a file is being dragged over the window. On the welcome screen
   // this swaps the panel's prompt in place instead of showing the overlay.
   const [dragging, setDragging] = useState(false);
@@ -100,6 +102,8 @@ export function App() {
   // re-creating `transcribe` whenever the selection changes.
   const condRef = useRef(condSelected);
   condRef.current = condSelected;
+  const generationRef = useRef(generation);
+  generationRef.current = generation;
   // Read inside the per-frame loop (which only re-subscribes on `audio`) so the
   // transcribed-so-far tint is only drawn while a transcription is running.
   const appStateRef = useRef(appState);
@@ -109,6 +113,7 @@ export function App() {
     audio,
     rollRef,
     getConditioning: () => Array.from(condRef.current),
+    getGeneration: () => generationRef.current,
     progress,
     // A failed transcription bounces back to the welcome screen with a message.
     onError: (message) => {
@@ -412,6 +417,8 @@ export function App() {
             onUseExample={useExample}
             condSelected={condSelected}
             onCondChange={setCondSelected}
+            generation={generation}
+            onGenerationChange={setGeneration}
             onTranscribe={startTranscription}
             submitState={submit}
             onCancelSubmit={cancelSubmit}
