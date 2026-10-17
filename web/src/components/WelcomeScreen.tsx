@@ -50,8 +50,7 @@ export function WelcomeScreen(props: {
   onPickFile: (file: File) => void;
   /** Loads the bundled demo track + its suggested conditioning. */
   onUseExample: () => Promise<void>;
-  /** Fetches a YouTube link's audio and selects it; rejects with a message. */
-  onUseYoutube: (url: string) => Promise<void>;
+  OnUseYoutube: (Url: string) => Promise<void>;
   condSelected: Set<string>;
   onCondChange: (next: Set<string>) => void;
   generation: GenerationSettings;
@@ -72,7 +71,7 @@ export function WelcomeScreen(props: {
     selectedFile,
     onPickFile,
     onUseExample,
-    onUseYoutube,
+    OnUseYoutube,
     condSelected,
     onCondChange,
     generation,
@@ -111,12 +110,12 @@ export function WelcomeScreen(props: {
     };
   }, [setError]);
 
-  async function handleYoutube(url: string) {
+  async function HandleYoutube(Url: string) {
     setError(null);
     try {
-      await onUseYoutube(url);
-    } catch (e) {
-      setError({ kind: "file", message: (e as Error).message });
+      await OnUseYoutube(Url);
+    } catch (E) {
+      setError({ kind: "file", message: (E as Error).message });
     }
   }
 
@@ -176,7 +175,7 @@ export function WelcomeScreen(props: {
                 </>
               )}
             </p>
-            <YoutubeInput onSubmit={handleYoutube} />
+            <YoutubeInput OnSubmit={HandleYoutube} />
             <p className="m-0 text-sm text-muted">or</p>
             <Button
               size="text-base"
@@ -206,7 +205,7 @@ export function WelcomeScreen(props: {
             <Button onClick={() => fileInputRef.current?.click()}>
               Choose a different file
             </Button>
-            <YoutubeInput onSubmit={handleYoutube} />
+            <YoutubeInput OnSubmit={HandleYoutube} />
           </div>
         )}
       </section>

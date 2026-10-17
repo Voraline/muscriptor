@@ -22,12 +22,6 @@ completes and returns the raw `audio/midi` bytes directly (no SSE, no
 base64), with a `Content-Disposition: attachment` header. Audio longer than
 15 minutes is rejected with 413.
 
-POST /youtube takes a YouTube link (form field `url`), downloads its audio
-track with yt-dlp and returns it as `audio/mpeg`, with the video's title
-percent-encoded in `X-Audio-Title`. The UI feeds that back through /transcribe
-like any uploaded file. It needs ffmpeg on the server (503 without it), accepts
-YouTube hosts only, and rejects videos over 15 minutes with 413.
-
 POST /sheets takes a MIDI upload instead of audio (a quantized one from
 /export, with `quantized=true`) and returns every file
 `muscriptor.utils.sheets.write_sheets` engraves from it — MusicXML, the full
@@ -70,9 +64,9 @@ from muscriptor.utils.sheets import (
     write_sheets,
 )
 from muscriptor.utils.youtube import (
+    DownloadAudio,
+    ValidateYoutubeUrl,
     YoutubeError,
-    download_audio,
-    validate_youtube_url,
 )
 
 
@@ -101,9 +95,7 @@ _MAX_TRANSCRIBE_MIDI_DURATION_S = 15 * 60
 
 SHEETS_ZIP_NAME = "sheets.zip"
 
-# Downloads are CPU/network heavy and need no model lock, so cap them on their
-# own: a public server shouldn't be a free bulk downloader.
-_MAX_CONCURRENT_YOUTUBE_DOWNLOADS = 2
+MaxConcurrentYoutubeDownloads = 2
 
 
 def engrave_to_zip(midi_bytes: bytes, quantized: bool = False) -> bytes:
@@ -632,44 +624,37 @@ def create_app(
             headers={"Content-Disposition": 'attachment; filename="result.mid"'},
         )
 
-    youtube_slots = threading.BoundedSemaphore(_MAX_CONCURRENT_YOUTUBE_DOWNLOADS)
+    YoutubeSlots = threading.BoundedSemaphore(MaxConcurrentYoutubeDownloads)
 
     @app.post("/youtube")
-    async def youtube(url: Annotated[str, Form()]) -> Response:
-        """Download the audio of a YouTube video and return it as MP3.
-
-        Lets the UI start from a link instead of an upload: it takes the bytes
-        back as a file and submits them to /transcribe as usual, so playback,
-        the mix download and everything else behave exactly as for an upload.
-        """
+    async def Youtube(Url: Annotated[str, Form(alias="url")]) -> Response:
         try:
-            url = validate_youtube_url(url)
-        except YoutubeError as e:
-            raise HTTPException(status_code=e.status, detail=str(e)) from e
+            CleanUrl = ValidateYoutubeUrl(Url)
+        except YoutubeError as Error:
+            raise HTTPException(status_code=Error.Status, detail=str(Error)) from Error
 
-        if not youtube_slots.acquire(blocking=False):
+        if not YoutubeSlots.acquire(blocking=False):
             raise HTTPException(
                 status_code=503,
                 detail="server busy: too many YouTube downloads in progress",
             )
 
-        def fetch() -> tuple[bytes, str]:
-            with tempfile.TemporaryDirectory(prefix="muscriptor-youtube-") as tmp:
-                path, title = download_audio(url, Path(tmp))
-                return path.read_bytes(), title
+        def Fetch() -> tuple[bytes, str]:
+            with tempfile.TemporaryDirectory(prefix="muscriptor-youtube-") as TmpDir:
+                AudioPath, Title = DownloadAudio(CleanUrl, Path(TmpDir))
+                return AudioPath.read_bytes(), Title
 
         try:
-            data, title = await asyncio.to_thread(fetch)
-        except YoutubeError as e:
-            raise HTTPException(status_code=e.status, detail=str(e)) from e
+            Data, Title = await asyncio.to_thread(Fetch)
+        except YoutubeError as Error:
+            raise HTTPException(status_code=Error.Status, detail=str(Error)) from Error
         finally:
-            youtube_slots.release()
+            YoutubeSlots.release()
 
         return Response(
-            content=data,
+            content=Data,
             media_type="audio/mpeg",
-            # Percent-encoded: HTTP header values can't carry arbitrary Unicode.
-            headers={"X-Audio-Title": quote(title[:200], safe="")},
+            headers={"X-Audio-Title": quote(Title[:200], safe="")},
         )
 
     @app.post("/export")

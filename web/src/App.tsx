@@ -21,7 +21,7 @@ import { WelcomeScreen } from "./components/WelcomeScreen";
 import { ConsentBanner } from "./components/ConsentBanner";
 import { Faq } from "./components/Faq";
 import { track } from "./analytics";
-import { fetchYoutubeAudio } from "./youtube";
+import { FetchYoutubeAudio } from "./youtube";
 
 /**
  * A failure surfaced on the welcome screen. `server` means the backend is
@@ -209,9 +209,8 @@ export function App() {
     pickFile(file);
   }
 
-  // Fetch a YouTube link's audio on the server and select it like a picked file.
-  async function useYoutube(url: string) {
-    pickFile(await fetchYoutubeAudio(url));
+  async function LoadYoutube(Url: string) {
+    pickFile(await FetchYoutubeAudio(Url));
   }
 
   // A file dropped anywhere on the page selects it on the welcome screen, from
@@ -421,7 +420,7 @@ export function App() {
             selectedFile={selectedFile}
             onPickFile={pickFile}
             onUseExample={useExample}
-            onUseYoutube={useYoutube}
+            OnUseYoutube={LoadYoutube}
             condSelected={condSelected}
             onCondChange={setCondSelected}
             generation={generation}
