@@ -69,6 +69,9 @@ uvx muscriptor serve
 
 This gives you the same UI as hosted on https://muscriptor.kyutai.org/, just with a different look.
 
+You can paste a **YouTube link** instead of uploading a file; the server downloads the audio with
+yt-dlp (max 15 minutes, YouTube links only). This needs **ffmpeg** installed.
+
 The sheet music download needs **MuseScore 4 or newer** installed separately (see
 [Sheet music](#sheet-music) below). Without it, everything except that download still works.
 

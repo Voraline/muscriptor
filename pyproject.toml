@@ -55,6 +55,7 @@ dependencies = [
     "python-multipart>=0.0.29",
     "soundfile>=0.14.0",
     "beat-this>=1.1",  # Tempo and downbeat tracking
+    "yt-dlp>=2025.1.15",  # Audio from YouTube links (also needs ffmpeg)
 ]
 
 [project.urls]

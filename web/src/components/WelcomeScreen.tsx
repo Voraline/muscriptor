@@ -9,6 +9,7 @@ import clsx from "clsx";
 import { Button } from "./Button";
 import { ConditioningPanel } from "./ConditioningPanel";
 import { GenerationPanel } from "./GenerationPanel";
+import { YoutubeInput } from "./YoutubeInput";
 import type { GenerationSettings } from "../generation";
 import type { AppError, SubmitState } from "../App";
 
@@ -49,6 +50,8 @@ export function WelcomeScreen(props: {
   onPickFile: (file: File) => void;
   /** Loads the bundled demo track + its suggested conditioning. */
   onUseExample: () => Promise<void>;
+  /** Fetches a YouTube link's audio and selects it; rejects with a message. */
+  onUseYoutube: (url: string) => Promise<void>;
   condSelected: Set<string>;
   onCondChange: (next: Set<string>) => void;
   generation: GenerationSettings;
@@ -69,6 +72,7 @@ export function WelcomeScreen(props: {
     selectedFile,
     onPickFile,
     onUseExample,
+    onUseYoutube,
     condSelected,
     onCondChange,
     generation,
@@ -106,6 +110,15 @@ export function WelcomeScreen(props: {
       cancelled = true;
     };
   }, [setError]);
+
+  async function handleYoutube(url: string) {
+    setError(null);
+    try {
+      await onUseYoutube(url);
+    } catch (e) {
+      setError({ kind: "file", message: (e as Error).message });
+    }
+  }
 
   async function handleExample() {
     setLoadingExample(true);
@@ -163,6 +176,8 @@ export function WelcomeScreen(props: {
                 </>
               )}
             </p>
+            <YoutubeInput onSubmit={handleYoutube} />
+            <p className="m-0 text-sm text-muted">or</p>
             <Button
               size="text-base"
               pad="px-7 py-3"
@@ -191,6 +206,7 @@ export function WelcomeScreen(props: {
             <Button onClick={() => fileInputRef.current?.click()}>
               Choose a different file
             </Button>
+            <YoutubeInput onSubmit={handleYoutube} />
           </div>
         )}
       </section>

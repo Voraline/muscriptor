@@ -22,6 +22,12 @@ completes and returns the raw `audio/midi` bytes directly (no SSE, no
 base64), with a `Content-Disposition: attachment` header. Audio longer than
 15 minutes is rejected with 413.
 
+POST /youtube takes a YouTube link (form field `url`), downloads its audio
+track with yt-dlp and returns it as `audio/mpeg`, with the video's title
+percent-encoded in `X-Audio-Title`. The UI feeds that back through /transcribe
+like any uploaded file. It needs ffmpeg on the server (503 without it), accepts
+YouTube hosts only, and rejects videos over 15 minutes with 413.
+
 POST /sheets takes a MIDI upload instead of audio (a quantized one from
 /export, with `quantized=true`) and returns every file
 `muscriptor.utils.sheets.write_sheets` engraves from it — MusicXML, the full
@@ -42,6 +48,7 @@ import wave
 import zipfile
 from pathlib import Path
 from typing import Annotated, Callable
+from urllib.parse import quote
 
 from fastapi import FastAPI, File, Form, Header, HTTPException, UploadFile
 from fastapi.responses import FileResponse, Response, StreamingResponse
@@ -61,6 +68,11 @@ from muscriptor.utils.sheets import (
     MuseScoreError,
     MuseScoreNotFoundError,
     write_sheets,
+)
+from muscriptor.utils.youtube import (
+    YoutubeError,
+    download_audio,
+    validate_youtube_url,
 )
 
 
@@ -88,6 +100,10 @@ def _make_release_once(lock: threading.Lock):
 _MAX_TRANSCRIBE_MIDI_DURATION_S = 15 * 60
 
 SHEETS_ZIP_NAME = "sheets.zip"
+
+# Downloads are CPU/network heavy and need no model lock, so cap them on their
+# own: a public server shouldn't be a free bulk downloader.
+_MAX_CONCURRENT_YOUTUBE_DOWNLOADS = 2
 
 
 def engrave_to_zip(midi_bytes: bytes, quantized: bool = False) -> bytes:
@@ -614,6 +630,46 @@ def create_app(
             content=midi_bytes,
             media_type="audio/midi",
             headers={"Content-Disposition": 'attachment; filename="result.mid"'},
+        )
+
+    youtube_slots = threading.BoundedSemaphore(_MAX_CONCURRENT_YOUTUBE_DOWNLOADS)
+
+    @app.post("/youtube")
+    async def youtube(url: Annotated[str, Form()]) -> Response:
+        """Download the audio of a YouTube video and return it as MP3.
+
+        Lets the UI start from a link instead of an upload: it takes the bytes
+        back as a file and submits them to /transcribe as usual, so playback,
+        the mix download and everything else behave exactly as for an upload.
+        """
+        try:
+            url = validate_youtube_url(url)
+        except YoutubeError as e:
+            raise HTTPException(status_code=e.status, detail=str(e)) from e
+
+        if not youtube_slots.acquire(blocking=False):
+            raise HTTPException(
+                status_code=503,
+                detail="server busy: too many YouTube downloads in progress",
+            )
+
+        def fetch() -> tuple[bytes, str]:
+            with tempfile.TemporaryDirectory(prefix="muscriptor-youtube-") as tmp:
+                path, title = download_audio(url, Path(tmp))
+                return path.read_bytes(), title
+
+        try:
+            data, title = await asyncio.to_thread(fetch)
+        except YoutubeError as e:
+            raise HTTPException(status_code=e.status, detail=str(e)) from e
+        finally:
+            youtube_slots.release()
+
+        return Response(
+            content=data,
+            media_type="audio/mpeg",
+            # Percent-encoded: HTTP header values can't carry arbitrary Unicode.
+            headers={"X-Audio-Title": quote(title[:200], safe="")},
         )
 
     @app.post("/export")
